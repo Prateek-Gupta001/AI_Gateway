@@ -24,7 +24,7 @@ type PostgresStore struct {
 }
 
 func NewStorage() (*PostgresStore, error) {
-	connStr := "user=postgres dbname=postgres password=gobank sslmode=disable"
+	connStr := "host=127.0.0.1 port=5432 user=postgres dbname=postgres password=gobank sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		slog.Info("Got this error while trying to open a connection to the database ", "error", err)
@@ -61,6 +61,8 @@ func (s *PostgresStore) Init() error {
 	id UUID primary key,
 	cacheable bool,
 	user_id varchar(50) REFERENCES Account(user_id),
+	user_query TEXT NOT NULL, 
+	llm_response TEXT NOT NULL, 
 	input_tokens integer,
 	output_tokens integer, 
 	total_tokens integer,
@@ -133,13 +135,15 @@ func (s *PostgresStore) IncrementUserTokens(userId string, tokens int, level typ
 
 func (s *PostgresStore) InsertRequest(request types.Request) error {
 	slog.Info("Adding a request into the db!")
-	query := `INSERT INTO Requests(id, cacheable, user_id, input_tokens, output_tokens, total_tokens, time_taken, model, cache_hit, level)
-	VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	query := `INSERT INTO Requests(id, cacheable, user_id, user_query, llm_response, input_tokens, output_tokens, total_tokens, time_taken, model, cache_hit, level)
+	VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 	if _, err := s.db.Exec(query,
 		request.Id,
 		request.Cacheable,
 		request.UserId,
+		request.UserQuery,
+		request.LLMResponse,
 		request.InputTokens,
 		request.OutputTokens,
 		request.TotalToken,
@@ -171,6 +175,8 @@ func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 	id, 
 	cacheable, 
 	user_id,
+	user_query, 
+	llm_response,
 	input_tokens,
 	output_tokens, 
 	total_tokens,
@@ -194,6 +200,8 @@ func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 			&r.Id,
 			&r.Cacheable,
 			&r.UserId,
+			&r.UserQuery,
+			&r.LLMResponse,
 			&r.InputTokens,
 			&r.OutputTokens,
 			&r.TotalToken,

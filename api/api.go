@@ -66,8 +66,9 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	start := time.Now()
 	var req = &types.RequestStruct{}
 	var request types.Request //this is the object that will be inserted in the db!
+	request.CacheHit = true
 	request.Id = uuid.NewString()
-	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*60)
+	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*1500)
 	defer embedCancel()
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
@@ -85,7 +86,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("is query dynamic?", "dynamic", dynamic)
 	lenghtOfMsg := len(req.Messages)
 	if !dynamic && lenghtOfMsg == 1 {
-		go s.embed.CreateQueryEmbedding(embedCtx, userQuery, embeddingChan)
+		go s.embed.SumbitJob(embedCtx, userQuery, embeddingChan)
 		slog.Info("The query is not dynamic and its the first one! ..... being cached!")
 		req.CacheFlag = true
 	}
@@ -105,6 +106,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 			request.CacheHit = exists
 			if err != nil {
 				//exit the if/select block here and go onto checking the complexity of the query
+				//TODO: decide if you actually wanna treat a query api error as a cache miss .. cuz that would/could lead to similar query being cached twice!
 				request.CacheHit = false
 			}
 			if !exists {
@@ -118,6 +120,8 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 					Id:           request.Id,
 					Cacheable:    request.Cacheable,
 					UserId:       request.UserId,
+					LLMResponse:  cacheRes.CachedAnswer,
+					UserQuery:    cacheRes.CachedQuery,
 					InputTokens:  cacheRes.InputTokens,
 					OutputTokens: cacheRes.OutputTokens,
 					Time:         end2,
@@ -140,6 +144,10 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("checking the complexity of the userQuery!", "level", level)
 	llmResStruct := &types.LLMResponse{}
 	err := s.llms.GenerateResponse(w, req.Messages, level, llmResStruct)
+	if err != nil {
+		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
+		return err
+	}
 	if err := s.store.IncrementUserTokens(req.UserId, llmResStruct.TotalTokens, llmResStruct.Level); err != nil {
 		slog.Error("Got this error while trying to increment the user Tokens", "error", err)
 	}
@@ -148,17 +156,22 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	request.TotalToken = llmResStruct.TotalTokens
 	request.Model = llmResStruct.Model
 	request.Level = llmResStruct.Level
+	request.LLMResponse = llmResStruct.LLMRes.String()
+	request.UserQuery = userQuery
 	end := time.Since(start)
 	request.Time = end
-
+	slog.Info("inserting this request into the database!", "request", request)
 	if err := s.store.InsertRequest(request); err != nil {
 		slog.Info("Got this error while trying to insert the request in postgres db", "error", err, "request", request)
 	}
-	// if !request.CacheHit {s.cache.InsertIntoCache(embedding, res, userquery)}
-	if err != nil {
-		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
-		return err
+	fmt.Println(request.CacheHit, req.CacheFlag)
+	if !request.CacheHit && req.CacheFlag {
+		//start a background process of inserting the query into a cache!
+		slog.Info("INSERTING INTO CACHE!")
+		go s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
 	}
+	// if !request.CacheHit {s.cache.InsertIntoCache(embedding, res, userquery)}
+
 	slog.Info("Query Answered!", "timeTaken", end)
 	fmt.Println("LLMRes struct is ", llmResStruct)
 	return nil

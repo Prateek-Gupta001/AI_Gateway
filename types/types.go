@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"context"
 	"time"
 )
 
@@ -37,6 +38,12 @@ type EmbeddingResult struct {
 	Err              error
 }
 
+type EmbeddingJob struct {
+	Ctx        context.Context
+	Input      string
+	ResultChan chan EmbeddingResult
+}
+
 type Messages struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -52,6 +59,7 @@ type CacheResponse struct {
 	InputTokens  int
 	OutputTokens int
 	CachedAnswer string
+	CachedQuery  string
 }
 
 type Account struct {
@@ -65,6 +73,8 @@ type Request struct {
 	Id           string
 	Cacheable    bool
 	UserId       string
+	UserQuery    string
+	LLMResponse  string
 	InputTokens  int
 	OutputTokens int
 	TotalToken   int
