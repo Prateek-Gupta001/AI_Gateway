@@ -59,7 +59,7 @@ func NewQdrantCache() *QdrantCache {
 func (q *QdrantCache) ExistsInCache(Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) {
 	searchResult, err := q.Client.Query(context.Background(), &qdrant.QueryPoints{
 		CollectionName: "AI_Gateway_Cache_1",
-		Query:          qdrant.NewQuery(Embedding[0]...),
+		Query:          qdrant.NewQuery(Embedding...),
 		WithPayload:    qdrant.NewWithPayload(true),
 		ScoreThreshold: &q.Threshold,
 	})
@@ -94,7 +94,7 @@ func (q *QdrantCache) InsertIntoCache(Embedding types.Embedding, llmResStruct ty
 		Points: []*qdrant.PointStruct{
 			{
 				Id:      qdrant.NewIDUUID(id),
-				Vectors: qdrant.NewVectors(Embedding[0]...),
+				Vectors: qdrant.NewVectors(Embedding...),
 				Payload: qdrant.NewValueMap(map[string]any{
 					"InputTokens":  llmResStruct.InputTokens,
 					"OutputTokens": llmResStruct.OutputTokens,

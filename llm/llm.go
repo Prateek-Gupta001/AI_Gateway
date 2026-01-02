@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
@@ -31,6 +32,7 @@ type LLMStruct struct {
 }
 
 func (s *LLMStruct) GenerateResponse(w http.ResponseWriter, messages []types.Messages, Level types.Level, llmResStruct *types.LLMResponse) error {
+	fmt.Println("got a request in generate response", w, messages, Level)
 	//could employ a strategy here to ensure that the ones giving off the error a lot of the time is not selected!
 	//also .. make a fake .. http buffer/stream .. that I could then use .. to test things .. and actually show this running!
 	for _, llm := range s.Models {
@@ -49,9 +51,40 @@ func NewLLMStruct() *LLMStruct {
 }
 
 func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
-	resp, err := http.Get("http://localhost:8080/test-stream")
+	fmt.Println("got a request in generate response", messages)
+	client := &http.Client{}
+
+	requestBody := map[string]interface{}{
+		"model":  "gpt-4o", // Note: "gpt-5" does not exist yet; use "gpt-4o" or "o1-preview"
+		"input":  CreateOpenAIMessages(messages),
+		"stream": true,
+	}
+
+	// Marshaling handles all formatting, escaping, and whitespace correctly
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		slog.Error("Failed to marshal request", "error", err)
+		return err
+	}
+
+	// Create the reader from the bytes
+	var data = bytes.NewReader(jsonData)
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", data)
+	slog.Info("request made!", "req", req)
+	if err != nil {
+		slog.Error("error happened!", "error", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// req.Header.Set("Authorization", "Bearer "+" api key
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Error("error happened!", "error", err)
+	}
+	defer resp.Body.Close()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		slog.Info("streaming unsupported!")
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return nil
 	}
@@ -64,47 +97,67 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 	w.Header().Set("Cache-control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	if llmResStruct.LLMRes == nil {
+		slog.Info("LLMResStruct.LLMRes was nil")
 		llmResStruct.LLMRes = new(bytes.Buffer)
 	}
+	f, err := os.OpenFile("streaming_output.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	// ... inside your loop
 	for {
-		data, err := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				break // stream ended
+				break
 			}
-			// real error
-			fmt.Println("err ", err)
+			fmt.Println("err", err)
+			break
 		}
-		//use io.multiwriter here .. and write to the both the things ... the llmResStruct and to the http.responsewriter!
-		fmt.Fprint(w, data)
-		flusher.Flush()
-		var chunk = &OpenAIChunk{}
-		if strings.HasPrefix(data, "data:") {
-			dataContent := strings.TrimPrefix(data, "data:")
-			dataContent = strings.TrimSpace(dataContent)
-			if dataContent == "[DONE]" {
+
+		// Write raw stream to file for your analysis
+		f.WriteString(line)
+
+		// Handle SSE parsing
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "data:") {
+			jsonContent := strings.TrimPrefix(line, "data:")
+			jsonContent = strings.TrimSpace(jsonContent)
+
+			// 1. Check for specific event types
+			// The JSON itself has a "type" field which is the source of truth
+			var event ResponsesStreamEvent
+			if err := json.Unmarshal([]byte(jsonContent), &event); err != nil {
 				continue
-			}
-			if err := json.Unmarshal([]byte(dataContent), chunk); err != nil {
-				slog.Info("Got this error while trying to unmarshal the given chunk to json!", "error", err.Error(), "chunk", dataContent)
-				continue
-			}
-			if chunk.Usage != nil {
-				llmResStruct.InputTokens = chunk.Usage.PromptTokens
-				llmResStruct.OutputTokens = chunk.Usage.CompletionTokens
-				llmResStruct.TotalTokens = chunk.Usage.TotalTokens
 			}
 
-			if len(chunk.Choices) != 0 {
-				content := chunk.Choices[0].Delta.Content
-				if content != "" {
-					llmResStruct.LLMRes.WriteString(chunk.Choices[0].Delta.Content)
+			switch event.Type {
+			case "response.output_text.delta":
+				slog.Info("event.delta", "info", event.Delta)
+				fmt.Fprintf(w, "data: %s\n\n", line)
+				flusher.Flush()
+
+				if llmResStruct.LLMRes != nil {
+					llmResStruct.LLMRes.WriteString(event.Delta)
 				}
+
+			case "response.completed":
+				// Capture usage stats at the very end
+				if event.Response != nil && event.Response.Usage != nil {
+					fmt.Println("response.completed ", event.Response.Usage)
+					llmResStruct.InputTokens = event.Response.Usage.InputTokens
+					llmResStruct.OutputTokens = event.Response.Usage.OutputTokens
+					llmResStruct.TotalTokens = event.Response.Usage.TotalTokens
+				}
+				// Break or continue as needed; the stream usually closes shortly after
 			}
 		}
 	}
 	llmResStruct.Level = types.Easy
 	llmResStruct.Model = "GPT"
+	fmt.Println("Returning from callGptAPI", llmResStruct)
 	return nil
 }
 
@@ -112,27 +165,58 @@ func callGeminiAPI(w http.ResponseWriter, messages []types.Messages, apikey stri
 	return nil
 }
 
-type OpenAIDelta struct {
-	Content string `json:"content,omitempty"`
+func CreateOpenAIMessages(messages []types.Messages) []map[string]string {
+	len := len(messages)
+	msg := make([]map[string]string, 0, len)
+	for _, m := range messages {
+		msg = append(msg, map[string]string{
+			"role": string(m.Role), "content": m.Content,
+		})
+	}
+	fmt.Println("messages now looks like this", msg)
+	return msg
 }
 
-type OpenAIChoice struct {
-	Index        int         `json:"index"`
-	Delta        OpenAIDelta `json:"delta"`
-	FinishReason *string     `json:"finish_reason"`
+type ErrorMessage struct {
+	Message string `json:"message"`
+	Type    string `json:"string"`
+	Param   bool   `json:param`
+	Code    string `json:code`
+}
+type ResponsesStreamEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int    `json:"sequence_number"`
+
+	// Fields specific to different event types
+	Delta        string    `json:"delta,omitempty"`    // For output_text.delta
+	Response     *Response `json:"response,omitempty"` // For response.created/completed
+	Item         *Item     `json:"item,omitempty"`     // For output_item.added/done
+	OutputIndex  int       `json:"output_index,omitempty"`
+	ContentIndex int       `json:"content_index,omitempty"`
+	ItemId       string    `json:"item_id,omitempty"`
 }
 
-type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+type Response struct {
+	ID     string `json:"id"`
+	Status string `json:"status"` // "in_progress", "completed", "incomplete", "failed"
+	Usage  *Usage `json:"usage,omitempty"`
 }
 
-type OpenAIChunk struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []OpenAIChoice `json:"choices"`
-	Usage   *OpenAIUsage   `json:"usage,omitempty"` // Only present in the final chunk
+type Item struct {
+	ID      string    `json:"id"`
+	Type    string    `json:"type"` // e.g. "message"
+	Role    string    `json:"role"`
+	Content []Content `json:"content"`
+	Status  string    `json:"status"`
+}
+
+type Content struct {
+	Type string `json:"type"` // "output_text"
+	Text string `json:"text"`
+}
+
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }

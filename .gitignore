@@ -2,8 +2,5 @@
 
 *.tgz
 
-local_cache/
 
-embed/local_cache/
-
-onnxruntime-linux-x64-1.15.1.tgz.1
+models/

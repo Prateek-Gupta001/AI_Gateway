@@ -11,10 +11,15 @@ import (
 	"github.com/Prateek-Gupta001/AI_Gateway/embed"
 	"github.com/Prateek-Gupta001/AI_Gateway/llm"
 	"github.com/Prateek-Gupta001/AI_Gateway/store"
+	"github.com/joho/godotenv"
 )
 
 func main() {
 	opts := returnOpts()
+	err := godotenv.Load()
+	if err != nil {
+		slog.Error("got this error while trying to load a dotenv file", "error", err)
+	}
 	// USE NewTextHandler INSTEAD OF NewJSONHandler
 	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	slog.SetDefault(logger)

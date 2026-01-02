@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -63,12 +64,13 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 }
 
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
+
+	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
 	var req = &types.RequestStruct{}
 	var request types.Request //this is the object that will be inserted in the db!
-	request.CacheHit = true
 	request.Id = uuid.NewString()
-	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*1500)
+	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*200)
 	defer embedCancel()
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
@@ -101,7 +103,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 			slog.Info("Embedding generation took more time than expected! Skipping embedding generation and moving onto llm response generation!")
 		case result := <-embeddingChan:
 			embedding = result.Embedding_Result
-			slog.Info("embedding generation was successful", "dimensions", len(embedding[0]))
+			slog.Info("embedding generation was successful", "query", result.Query)
 			cacheRes, exists, err := s.cache.ExistsInCache(embedding, userQuery)
 			request.CacheHit = exists
 			if err != nil {
@@ -143,7 +145,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	level := checkComplexity(userQuery)
 	slog.Info("checking the complexity of the userQuery!", "level", level)
 	llmResStruct := &types.LLMResponse{}
-	err := s.llms.GenerateResponse(w, req.Messages, level, llmResStruct)
+	err := s.llms.GenerateResponse(w, req.Messages, types.Easy, llmResStruct) //TODO: change this to level only ... this is just for testing!
 	if err != nil {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return err
@@ -151,6 +153,23 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	if err := s.store.IncrementUserTokens(req.UserId, llmResStruct.TotalTokens, llmResStruct.Level); err != nil {
 		slog.Error("Got this error while trying to increment the user Tokens", "error", err)
 	}
+	slog.Info("REQEUST INFORMATION", "request.cachehit", request.CacheHit, "req.cacheflag", req.CacheFlag)
+	if !request.CacheHit && req.CacheFlag {
+		if embedding != nil {
+			slog.Info("INSERTING INTO THE CACHE!")
+			//embedding worker produced on time!
+			go s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+		} else {
+			slog.Info("inside the else")
+			go func() {
+				result := <-embeddingChan
+				slog.Info("The worker did not create the embedding on time ... now lazy caching!")
+				embedding = result.Embedding_Result
+				s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+			}()
+		}
+	}
+
 	request.InputTokens = llmResStruct.InputTokens
 	request.OutputTokens = llmResStruct.OutputTokens
 	request.TotalToken = llmResStruct.TotalTokens
@@ -164,16 +183,9 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	if err := s.store.InsertRequest(request); err != nil {
 		slog.Info("Got this error while trying to insert the request in postgres db", "error", err, "request", request)
 	}
-	fmt.Println(request.CacheHit, req.CacheFlag)
-	if !request.CacheHit && req.CacheFlag {
-		//start a background process of inserting the query into a cache!
-		slog.Info("INSERTING INTO CACHE!")
-		go s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
-	}
-	// if !request.CacheHit {s.cache.InsertIntoCache(embedding, res, userquery)}
 
 	slog.Info("Query Answered!", "timeTaken", end)
-	fmt.Println("LLMRes struct is ", llmResStruct)
+	slog.Info("Response from the LLM was generated succesfully! At the end of request", "llmResStruct", llmResStruct)
 	return nil
 }
 
@@ -187,6 +199,21 @@ func checkTimeSensitivity(query string) bool {
 	return false
 }
 
+func CosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) {
+		return 0.0
+	}
+	var dotProduct, normA, normB float64
+	for i := range a {
+		dotProduct += float64(a[i] * b[i])
+		normA += float64(a[i] * a[i])
+		normB += float64(b[i] * b[i])
+	}
+	if normA == 0 || normB == 0 {
+		return 0.0
+	}
+	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
+}
 func checkComplexity(query string) types.Level {
 	numWords := strings.Fields(query)
 	if len(numWords) >= 10 {

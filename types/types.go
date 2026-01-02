@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type Embedding [][]float32
+type Embedding []float32
 
 type Level string
 
@@ -35,6 +35,7 @@ type LLMResponse struct {
 
 type EmbeddingResult struct {
 	Embedding_Result Embedding
+	Query            string
 	Err              error
 }
 
