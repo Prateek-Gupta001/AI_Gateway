@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -64,13 +63,13 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 }
 
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
-
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
 	var req = &types.RequestStruct{}
 	var request types.Request //this is the object that will be inserted in the db!
 	request.Id = uuid.NewString()
 	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*200)
+	embedGenCtx, embedGenCtxCancel := context.WithTimeout(context.Background(), time.Millisecond*7000)
 	defer embedCancel()
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
@@ -162,10 +161,15 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 		} else {
 			slog.Info("inside the else")
 			go func() {
-				result := <-embeddingChan
-				slog.Info("The worker did not create the embedding on time ... now lazy caching!")
-				embedding = result.Embedding_Result
-				s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+				defer embedGenCtxCancel()
+				select {
+				case result := <-embeddingChan:
+					slog.Info("The worker did not create the embedding on time ... now lazy caching!")
+					embedding = result.Embedding_Result
+					s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+				case <-embedGenCtx.Done():
+					slog.Info("Embedding Generation was taking longer than 7 seconds... skipping caching even though cacheable and cache miss")
+				}
 			}()
 		}
 	}
@@ -199,21 +203,6 @@ func checkTimeSensitivity(query string) bool {
 	return false
 }
 
-func CosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) {
-		return 0.0
-	}
-	var dotProduct, normA, normB float64
-	for i := range a {
-		dotProduct += float64(a[i] * b[i])
-		normA += float64(a[i] * a[i])
-		normB += float64(b[i] * b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0.0
-	}
-	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
-}
 func checkComplexity(query string) types.Level {
 	numWords := strings.Fields(query)
 	if len(numWords) >= 10 {
