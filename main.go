@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,10 +17,12 @@ import (
 
 func main() {
 	opts := returnOpts()
+	ctx := context.Background()
 	err := godotenv.Load()
 	if err != nil {
 		slog.Error("got this error while trying to load a dotenv file", "error", err)
 	}
+	slog.Info(os.Getenv("OPENAI_API_KEY"))
 	// USE NewTextHandler INSTEAD OF NewJSONHandler
 	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
@@ -35,6 +38,7 @@ func main() {
 	}
 	llm := llm.NewLLMStruct()
 	cache := cache.NewQdrantCache()
+	go cache.ReviseCache(ctx)
 	embed := embed.NewEmbeddingService(2, 100)
 	server := api.NewAIGateway(":9000", store, llm, cache, embed)
 	slog.Info("Server is running on port 9000!")

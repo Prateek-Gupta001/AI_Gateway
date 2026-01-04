@@ -144,7 +144,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	level := checkComplexity(userQuery)
 	slog.Info("checking the complexity of the userQuery!", "level", level)
 	llmResStruct := &types.LLMResponse{}
-	err := s.llms.GenerateResponse(w, req.Messages, types.Easy, llmResStruct) //TODO: change this to level only ... this is just for testing!
+	err := s.llms.GenerateResponse(w, req.Messages, level, llmResStruct) //TODO: change this to level only ... this is just for testing!
 	if err != nil {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return err

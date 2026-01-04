@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+
 	"strings"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
@@ -45,8 +46,8 @@ func (s *LLMStruct) GenerateResponse(w http.ResponseWriter, messages []types.Mes
 
 func NewLLMStruct() *LLMStruct {
 	return &LLMStruct{
-		Models: []llmModel{{ModelName: "Gpt 4o", ApiKey: "dummyapikey", Level: types.Easy, Call: callGptAPI},
-			{ModelName: "Gemini 3.0", ApiKey: "dummyapikey2", Level: types.High, Call: callGeminiAPI}},
+		Models: []llmModel{{ModelName: "Gpt 4o", ApiKey: os.Getenv("OPENAI_API_KEY"), Level: types.Easy, Call: callGptAPI},
+			{ModelName: "Gemini 2.5 flash", ApiKey: os.Getenv("GEMINI_API_KEY"), Level: types.High, Call: callGeminiAPI}},
 	}
 }
 
@@ -76,7 +77,7 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 		slog.Error("error happened!", "error", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// req.Header.Set("Authorization", "Bearer "+" api key
+	req.Header.Set("Authorization", "Bearer "+apikey)
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("error happened!", "error", err)
@@ -88,10 +89,6 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return nil
 	}
-	if err != nil {
-		fmt.Println("Got this err ", err)
-	}
-	defer resp.Body.Close()
 	reader := bufio.NewReader(resp.Body)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-control", "no-cache")
@@ -113,6 +110,7 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 				break
 			}
 			fmt.Println("err", err)
+			return err //TODO: DO something here to handle the errors even inside the streams gracefully!
 			break
 		}
 
@@ -130,6 +128,7 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 			// The JSON itself has a "type" field which is the source of truth
 			var event ResponsesStreamEvent
 			if err := json.Unmarshal([]byte(jsonContent), &event); err != nil {
+				slog.Error("Got this error while trying to unmarshal the json in OpenAI", "error", err)
 				continue
 			}
 
@@ -161,8 +160,216 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 	return nil
 }
 
+// func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+// 	resp, err := http.Get("http://localhost:8080/test-stream")
+// 	flusher, ok := w.(http.Flusher)
+// 	if !ok {
+// 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+// 		return nil
+// 	}
+// 	if err != nil {
+// 		fmt.Println("Got this err ", err)
+// 	}
+// 	defer resp.Body.Close()
+// 	reader := bufio.NewReader(resp.Body)
+// 	w.Header().Set("Content-Type", "text/event-stream")
+// 	w.Header().Set("Cache-control", "no-cache")
+// 	w.Header().Set("Connection", "keep-alive")
+// 	if llmResStruct.LLMRes == nil {
+// 		llmResStruct.LLMRes = new(bytes.Buffer)
+// 	}
+// 	for {
+// 		data, err := reader.ReadString('\n')
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				break // stream ended
+// 			}
+// 			// real error
+// 			fmt.Println("err ", err)
+// 		}
+// 		//use io.multiwriter here .. and write to the both the things ... the llmResStruct and to the http.responsewriter!
+// 		fmt.Fprint(w, data)
+// 		flusher.Flush()
+// 		var chunk = &OpenAIChunk{}
+// 		if strings.HasPrefix(data, "data:") {
+// 			dataContent := strings.TrimPrefix(data, "data:")
+// 			dataContent = strings.TrimSpace(dataContent)
+// 			if dataContent == "[DONE]" {
+// 				continue
+// 			}
+// 			if err := json.Unmarshal([]byte(dataContent), chunk); err != nil {
+// 				slog.Info("Got this error while trying to unmarshal the given chunk to json!", "error", err.Error(), "chunk", dataContent)
+// 				continue
+// 			}
+// 			if chunk.Usage != nil {
+// 				llmResStruct.InputTokens = chunk.Usage.PromptTokens
+// 				llmResStruct.OutputTokens = chunk.Usage.CompletionTokens
+// 				llmResStruct.TotalTokens = chunk.Usage.TotalTokens
+// 			}
+
+// 			if len(chunk.Choices) != 0 {
+// 				content := chunk.Choices[0].Delta.Content
+// 				if content != "" {
+// 					llmResStruct.LLMRes.WriteString(chunk.Choices[0].Delta.Content)
+// 				}
+// 			}
+// 		}
+// 	}
+// 	llmResStruct.Level = types.Easy
+// 	llmResStruct.Model = "GPT"
+// 	return nil
+// }
+
+// type OpenAIDelta struct {
+// 	Content string `json:"content,omitempty"`
+// }
+
+// type OpenAIChoice struct {
+// 	Index        int         `json:"index"`
+// 	Delta        OpenAIDelta `json:"delta"`
+// 	FinishReason *string     `json:"finish_reason"`
+// }
+
+// type OpenAIUsage struct {
+// 	PromptTokens     int `json:"prompt_tokens"`
+// 	CompletionTokens int `json:"completion_tokens"`
+// 	TotalTokens      int `json:"total_tokens"`
+// }
+
+// type OpenAIChunk struct {
+// 	ID      string         `json:"id"`
+// 	Object  string         `json:"object"`
+// 	Created int64          `json:"created"`
+// 	Model   string         `json:"model"`
+// 	Choices []OpenAIChoice `json:"choices"`
+// 	Usage   *OpenAIUsage   `json:"usage,omitempty"` // Only present in the final chunk
+// }
+
+func CreateGeminiMessages(messages []types.Messages) []map[string]interface{} {
+	len := len(messages)
+	msg := make([]map[string]interface{}, 0, len)
+	for _, m := range messages {
+		if m.Role == types.RoleAssistant {
+			m.Role = "model"
+		}
+		msg = append(msg, map[string]interface{}{
+			"role": string(m.Role),
+			"parts": []map[string]string{
+				{"text": m.Content},
+			},
+		})
+	}
+	return msg
+}
+
 func callGeminiAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+	client := &http.Client{}
+	jsonRequest := map[string]interface{}{
+		"contents": CreateGeminiMessages(messages),
+	}
+	jsonData, err := json.Marshal(jsonRequest)
+	if err != nil {
+		slog.Error("Got this error while trying to marshal the llm request into json", "error", err)
+	}
+	finalReq := bytes.NewReader(jsonData)
+	req, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", finalReq)
+	//use a non thinking model only!
+	if err != nil {
+		slog.Error("Got this error right here", "error", err)
+		return err
+	}
+	req.Header.Set("x-goog-api-key", apikey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Error("Got this error right here", "error", err)
+	}
+	defer resp.Body.Close()
+	flusher := w.(http.Flusher)
+	reader := bufio.NewReader(resp.Body)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	if llmResStruct.LLMRes == nil {
+		slog.Info("LLMResStruct.LLMRes was nil")
+		llmResStruct.LLMRes = new(bytes.Buffer)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			slog.Error("Got this unexpected error inside the string", "error", err)
+			return err
+		}
+		fmt.Fprintf(w, line)
+		flusher.Flush()
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			jsonContent := strings.TrimPrefix(line, "data:")
+			jsonContent = strings.TrimSpace(jsonContent)
+
+			var chunk GeminiStreamResponse
+			err := json.Unmarshal([]byte(jsonContent), &chunk)
+			if err != nil {
+				slog.Error("Got this error while trying to unmarshal the json in Gemini", "error", err)
+			}
+			if len(chunk.Candidates) > 0 && len(chunk.Candidates[0].Content.Parts) > 0 {
+				textChunk := chunk.Candidates[0].Content.Parts[0].Text
+				llmResStruct.LLMRes.WriteString(textChunk)
+			}
+
+			// Extract Token Usage (Usually in the last chunk)
+			if chunk.UsageMetadata != nil {
+				// Assuming you have these fields in your types.LLMResponse struct
+				// If not, you will need to add them.
+				llmResStruct.InputTokens = chunk.UsageMetadata.PromptTokenCount
+				llmResStruct.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
+				llmResStruct.TotalTokens = chunk.UsageMetadata.TotalTokenCount
+
+				slog.Info("Token usage captured",
+					"prompt", chunk.UsageMetadata.PromptTokenCount,
+					"output", chunk.UsageMetadata.CandidatesTokenCount,
+				)
+			}
+
+		}
+
+	}
+	llmResStruct.Model = "Gemini"
+	llmResStruct.Level = types.High
+
 	return nil
+}
+
+// GeminiStreamResponse represents the root JSON object received in each SSE chunk.
+type GeminiStreamResponse struct {
+	Candidates    []Candidate    `json:"candidates"`
+	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"` // Pointer as it's not always present
+}
+
+type Candidate struct {
+	Content      Gemini_Content `json:"content"`
+	FinishReason string         `json:"finishReason"`
+	Index        int            `json:"index"`
+}
+
+type Gemini_Content struct {
+	Parts []Part `json:"parts"`
+	Role  string `json:"role"`
+}
+
+type Part struct {
+	Text string `json:"text"`
+}
+
+// UsageMetadata captures the token counts.
+// This is usually sent in the final chunk of the stream.
+type UsageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
 func CreateOpenAIMessages(messages []types.Messages) []map[string]string {
@@ -177,12 +384,6 @@ func CreateOpenAIMessages(messages []types.Messages) []map[string]string {
 	return msg
 }
 
-type ErrorMessage struct {
-	Message string `json:"message"`
-	Type    string `json:"string"`
-	Param   bool   `json:param`
-	Code    string `json:code`
-}
 type ResponsesStreamEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int    `json:"sequence_number"`

@@ -2,11 +2,14 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Cache interface {
@@ -49,10 +52,18 @@ func NewQdrantCache() *QdrantCache {
 		if err != nil {
 			slog.Error("Got this error while trying to create the collection", "error", err)
 		}
+		_, err := client.CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: "AI_Gateway_Cache_1",
+			FieldName:      "TTL",
+			FieldType:      qdrant.FieldType_FieldTypeDatetime.Enum(), // Explicitly tell Qdrant this is a Date
+		})
+		if err != nil {
+			slog.Error("Got this error while creating the qdrant cache!", "error", err)
+		}
 	}
 	return &QdrantCache{
 		Client:    client,
-		Threshold: 0.90,
+		Threshold: 0.85,
 	}
 }
 
@@ -100,6 +111,7 @@ func (q *QdrantCache) InsertIntoCache(Embedding types.Embedding, llmResStruct ty
 					"OutputTokens": llmResStruct.OutputTokens,
 					"CachedAnswer": llmResStruct.LLMRes.String(),
 					"CachedQuery":  userQuery,
+					"TTL":          time.Now().Add(24 * time.Hour).Format(time.RFC3339), //inside cache for a day
 				}),
 			},
 		},
@@ -109,4 +121,35 @@ func (q *QdrantCache) InsertIntoCache(Embedding types.Embedding, llmResStruct ty
 		return
 	}
 	slog.Info("Insertion into cache successful!", "operationInfo", operationInfo)
+}
+
+func (q *QdrantCache) ReviseCache(ctx context.Context) {
+	//this function goes via the qdrant cache and removes those points/vectors that have exceeded their TTL.
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			slog.Info("Our daily cache cleanup has begun!")
+			res, err := q.Client.Delete(context.Background(), &qdrant.DeletePoints{
+				CollectionName: "AI_Gateway_Cache_1",
+				Points: qdrant.NewPointsSelectorFilter(
+					&qdrant.Filter{
+						Must: []*qdrant.Condition{
+							qdrant.NewDatetimeRange("TTL", &qdrant.DatetimeRange{
+								Lte: timestamppb.New(time.Now()),
+							}),
+						},
+					},
+				),
+			})
+			if err != nil {
+				slog.Error("Got this error while revising/clearing the cache ", "error", err)
+			}
+			fmt.Println("Periodic Cache cleanup was succesful .. here are the results", "results", res)
+		case <-ctx.Done():
+			slog.Info("Stopping cache cleanup job...")
+			return
+		}
+	}
 }
