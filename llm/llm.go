@@ -32,6 +32,18 @@ type LLMStruct struct {
 	Models []llmModel
 }
 
+func (s *LLMStruct) ChangeModel(modelname string) llmModel {
+	//In future for making sure that model level changes if at that level the model failed!
+	for _, model := range s.Models {
+		if modelname != model.ModelName {
+			slog.Info("Returning a changed model", "earlier level", modelname, "new level", model.ModelName)
+			return model
+		}
+	}
+	slog.Error("Critical Error! Model change couldn't take place ... models weren't intialised properly")
+	return s.Models[0]
+}
+
 func (s *LLMStruct) GenerateResponse(w http.ResponseWriter, messages []types.Messages, Level types.Level, llmResStruct *types.LLMResponse) error {
 	fmt.Println("got a request in generate response", w, messages, Level)
 	//could employ a strategy here to ensure that the ones giving off the error a lot of the time is not selected!
@@ -97,11 +109,7 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 		slog.Info("LLMResStruct.LLMRes was nil")
 		llmResStruct.LLMRes = new(bytes.Buffer)
 	}
-	f, err := os.OpenFile("streaming_output.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
+
 	// ... inside your loop
 	for {
 		line, err := reader.ReadString('\n')
@@ -111,11 +119,7 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 			}
 			fmt.Println("err", err)
 			return err //TODO: DO something here to handle the errors even inside the streams gracefully!
-			break
 		}
-
-		// Write raw stream to file for your analysis
-		f.WriteString(line)
 
 		// Handle SSE parsing
 		line = strings.TrimSpace(line)
@@ -134,7 +138,6 @@ func callGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 
 			switch event.Type {
 			case "response.output_text.delta":
-				slog.Info("event.delta", "info", event.Delta)
 				fmt.Fprintf(w, "data: %s\n\n", line)
 				flusher.Flush()
 

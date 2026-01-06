@@ -8,6 +8,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/nlpodyssey/cybertron v0.2.1
 	github.com/qdrant/go-client v1.16.2
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
@@ -26,5 +27,4 @@ require (
 	golang.org/x/text v0.32.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251111163417-95abcf5c77ba // indirect
 	google.golang.org/grpc v1.76.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
 )

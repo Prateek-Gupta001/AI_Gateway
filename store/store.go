@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -11,20 +14,71 @@ import (
 )
 
 type Storage interface {
-	InsertRequest(types.Request) error
-	GetCacheHitPercentage() (int, error)
-	GetTimeSaved() (time.Duration, error)
-	CostSaved() (int, error)
-	IncrementUserTokens(userId string, tokens int, level types.Level) error
+	SubmitInsertRequest(context.Context, types.Request)
+	SubmitIncrementUserTokens(context.Context, string, int, types.Level)
+	GetAnalytics() (types.AnalyticsResponse, error)
 	GetAllRequests() ([]*types.Request, error)
 }
 
 type PostgresStore struct {
-	db *sql.DB
+	db                 *sql.DB
+	InsertRequestChan  chan types.InsertRequestPayload
+	IncrementTokenChan chan types.IncTokenPayload
 }
 
-func NewStorage() (*PostgresStore, error) {
-	connStr := "host=127.0.0.1 port=5432 user=postgres dbname=postgres password=gobank sslmode=disable"
+func (s *PostgresStore) StoreWorker(id int) {
+	slog.Info("Starting StoreWorker", "id", id)
+	for {
+		select {
+		case val := <-s.InsertRequestChan:
+			err := s.InsertRequest(val.Ctx, val.Request)
+			if err != nil {
+				uid, _ := val.Ctx.Value(types.UserIdKey).(string)
+				slog.Error("Got this error while trying to insert the request Id", "id", uid, "error", err)
+			} //TODO: Add id (from context!)
+		case val := <-s.IncrementTokenChan:
+			err := s.IncrementUserTokens(val.Ctx, val.UserId, val.Tokens, val.Level)
+			if err != nil {
+				uid, _ := val.Ctx.Value(types.UserIdKey).(string)
+				slog.Error("Got this error while trying to increment user tokens", "id", uid, "error", err)
+			} //TODO: Add id (from context!)
+		}
+	}
+}
+
+func (s *PostgresStore) SubmitInsertRequest(ctx context.Context, request types.Request) {
+	select {
+	case s.InsertRequestChan <- types.InsertRequestPayload{
+		Request: request,
+		Ctx:     ctx,
+	}:
+
+	default:
+		slog.Info("channel is full! dropping insert request to preserve latency!")
+	}
+
+}
+
+func (s *PostgresStore) SubmitIncrementUserTokens(ctx context.Context, userId string, tokens int, level types.Level) {
+
+	select {
+	case s.IncrementTokenChan <- types.IncTokenPayload{
+		UserId: userId,
+		Tokens: tokens,
+		Level:  level,
+		Ctx:    ctx,
+	}:
+
+	default:
+		slog.Info("channel is full! dropping increment tokens to preserve latency!")
+	}
+}
+
+func NewStorage(numWorkers int) (*PostgresStore, error) {
+
+	dbPassword := os.Getenv("DB_PASSWORD")
+	connStr := fmt.Sprintf("host=127.0.0.1 port=5432 user=postgres dbname=postgres password=%s sslmode=disable", dbPassword)
+	// ... rest of code
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		slog.Info("Got this error while trying to open a connection to the database ", "error", err)
@@ -34,9 +88,18 @@ func NewStorage() (*PostgresStore, error) {
 		slog.Info("Got this error while trying to ping the database ", "error", err)
 		return nil, err
 	}
-	return &PostgresStore{
-		db: db,
-	}, nil
+	InsertRequestChan := make(chan types.InsertRequestPayload, 100)
+	IncrementTokenChan := make(chan types.IncTokenPayload, 100)
+
+	ps := &PostgresStore{
+		db:                 db,
+		InsertRequestChan:  InsertRequestChan,
+		IncrementTokenChan: IncrementTokenChan,
+	}
+	for i := 0; i < numWorkers; i++ {
+		go ps.StoreWorker(i)
+	}
+	return ps, nil
 }
 
 func (s *PostgresStore) Init() error {
@@ -78,13 +141,12 @@ func (s *PostgresStore) Init() error {
 	}
 	slog.Info("Tables have been created!")
 	return nil
-
 }
 
 // This function creates the userId if it doesn't exist in the db and then fetches it
 //I guess this should be included in the increment tokens function only ...
 
-func (s *PostgresStore) IncrementUserTokens(userId string, tokens int, level types.Level) error {
+func (s *PostgresStore) IncrementUserTokens(ctx context.Context, userId string, tokens int, level types.Level) error {
 	var complex_tokens, simple_tokens int
 	switch level {
 	case types.Easy:
@@ -93,6 +155,8 @@ func (s *PostgresStore) IncrementUserTokens(userId string, tokens int, level typ
 		complex_tokens = tokens
 	}
 
+	ctx, cancelctx := context.WithTimeout(ctx, time.Second*3)
+	defer cancelctx()
 	const query = `
     INSERT INTO account (
 		user_id,
@@ -120,7 +184,7 @@ func (s *PostgresStore) IncrementUserTokens(userId string, tokens int, level typ
 
 	acc := &types.Account{}
 
-	err := s.db.QueryRow(query, userId, simple_tokens, complex_tokens).Scan(
+	err := s.db.QueryRowContext(ctx, query, userId, simple_tokens, complex_tokens).Scan(
 		&acc.UserId,
 		&acc.Simple_Tokens,
 		&acc.Complex_Tokens,
@@ -133,12 +197,14 @@ func (s *PostgresStore) IncrementUserTokens(userId string, tokens int, level typ
 	return nil
 }
 
-func (s *PostgresStore) InsertRequest(request types.Request) error {
+func (s *PostgresStore) InsertRequest(ctx context.Context, request types.Request) error {
 	slog.Info("Adding a request into the db!")
 	query := `INSERT INTO Requests(id, cacheable, user_id, user_query, llm_response, input_tokens, output_tokens, total_tokens, time_taken, model, cache_hit, level)
 	VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
-	if _, err := s.db.Exec(query,
+	ctx, cancelctx := context.WithTimeout(ctx, time.Second*3)
+	defer cancelctx()
+	if _, err := s.db.ExecContext(ctx, query,
 		request.Id,
 		request.Cacheable,
 		request.UserId,
@@ -158,17 +224,101 @@ func (s *PostgresStore) InsertRequest(request types.Request) error {
 	return nil
 }
 
-func (s *PostgresStore) GetCacheHitPercentage() (int, error) {
-	return 0, nil
+func (s *PostgresStore) GetAnalytics() (types.AnalyticsResponse, error) {
+	reqs, err := s.GetAllRequests()
+	CostPerInputToken := 0.000002
+	CostPerOutputToken := 0.000012
+	if err != nil {
+		slog.Error("Got this error while trying to calculate cost saved!", "error", err)
+		return types.AnalyticsResponse{}, err
+	}
+	var CostSaved float64
+	var CacheHitNum, CacheMissNum int64
+	var TotalCacheMissTime, TotalCacheHitTime int64
+	var TotalCacheMissTokens, TotalCacheHitTokens int
+
+	slog.Info("Number of requests", "num", len(reqs))
+	for _, r := range reqs {
+		if r.CacheHit == true {
+			CacheHitNum++
+			TotalCacheHitTokens += r.TotalToken
+			TotalCacheHitTime += r.Time.Milliseconds()
+			// TimeSaved += time.Duration(AvgTimeTakenPerToken*r.TotalToken) - AvgTimeTakenByCachedRequest
+			CostSaved += float64(r.InputTokens)*CostPerInputToken + float64(r.OutputTokens)*CostPerOutputToken
+		} else {
+			CacheMissNum++
+			TotalCacheMissTime += r.Time.Milliseconds()
+			TotalCacheMissTokens += r.TotalToken
+		}
+	}
+	// avg cache miss time per token * total number of tokens - total time taken
+	// AvgCacheHitTime := int64(TotalCacheHitTime.Milliseconds()/CacheHitNum)
+	// AvgTimeTakenPerTokenOnCacheMiss := float64(TotalCacheMissTime) / float64(TotalCacheMissTokens)
+	// slog.Info("the values here are ",
+	// 	"AvgTimeTakenPerTokenOnCacheMiss", AvgTimeTakenPerTokenOnCacheMiss,
+	// 	"TotalCacheHitTokens", TotalCacheHitTokens,
+	// 	"TotalCacheMissTokens", TotalCacheMissTokens,
+	// 	"TotalCacheHitTime", TotalCacheHitTime,
+	// 	"TotalCacheMissTime", TotalCacheMissTime)
+	// TimeSaved := float64(AvgTimeTakenPerTokenOnCacheMiss)*(float64(TotalCacheHitTokens)+float64(TotalCacheMissTokens)) - float64(TotalCacheHitTime+TotalCacheMissTime)
+	//Time saved is total time taken if all requests were cache miss - total time taken in reality
+	CacheHitPercentage := float64(CacheHitNum) / float64(len(reqs)) * 100
+	slog.Info("Costs Saved", "num", CostSaved, "No. of Cache hits", CacheHitNum, "CacheHitPercentage", CacheHitPercentage)
+	return types.AnalyticsResponse{
+		CostSaved:          CostSaved,
+		CacheHitPercentage: CacheHitPercentage,
+		// TimeSaved:          time.Duration(TimeSaved * float64(time.Millisecond)),
+		Msg: "Here are the analytics!",
+	}, nil
 }
 
-func (s *PostgresStore) GetTimeSaved() (time.Duration, error) {
-	return time.Duration(time.Second), nil
-}
+// func (s *PostgresStore) GetAnalytics() (types.AnalyticsResponse, error) {
+// 	reqs, err := s.GetAllRequests()
+// 	CostPerInputToken := 0.000002
+// 	CostPerOutputToken := 0.000012
+// 	if err != nil {
+// 		slog.Error("Got this error while trying to calculate cost saved!", "error", err)
+// 		return types.AnalyticsResponse{}, err
+// 	}
+// 	var CostSaved float64
+// 	var CacheHitNum, CacheMissNum int64
+// 	var TotalCacheMissTime, TotalCacheHitTime int64
+// 	var TotalCacheMissTokens, TotalCacheHitTokens int
 
-func (s *PostgresStore) CostSaved() (int, error) {
-	return 0, nil
-}
+// 	slog.Info("Number of requests", "num", len(reqs))
+// 	for _, r := range reqs {
+// 		if r.CacheHit == true {
+// 			CacheHitNum++
+// 			TotalCacheHitTokens += r.TotalToken
+// 			TotalCacheHitTime += r.Time.Milliseconds()
+// 			CostSaved += float64(r.InputTokens)*CostPerInputToken + float64(r.OutputTokens)*CostPerOutputToken
+// 		} else {
+// 			CacheMissNum++
+// 			TotalCacheMissTime += r.Time.Milliseconds()
+// 			TotalCacheMissTokens += r.TotalToken
+// 		}
+// 	}
+
+// 	var TimeSaved int64
+// 	if CacheMissNum > 0 && TotalCacheMissTokens > 0 && CacheHitNum > 0 {
+// 		// Calculate average time per token for cache misses using float64
+// 		AvgTimePerTokenOnCacheMiss := float64(TotalCacheMissTime) / float64(TotalCacheMissTokens)
+
+// 		// Hypothetical time if cache hits were misses - Actual cache hit time
+// 		TimeSavedMs := AvgTimePerTokenOnCacheMiss*float64(TotalCacheHitTokens) - float64(TotalCacheHitTime)
+// 		TimeSaved = int64(TimeSavedMs)
+// 	}
+
+// 	CacheHitPercentage := float64(CacheHitNum) / float64(len(reqs)) * 100
+// 	slog.Info("Costs Saved", "num", CostSaved, "No. of Cache hits", CacheHitNum, "CacheHitPercentage", CacheHitPercentage, "TimeSaved (ms)", TimeSaved)
+
+// 	return types.AnalyticsResponse{
+// 		CostSaved:          CostSaved,
+// 		CacheHitPercentage: CacheHitPercentage,
+// 		TimeSaved:          time.Duration(TimeSaved) * time.Millisecond,
+// 		Msg:                "Here are the analytics!",
+// 	}, nil
+// }
 
 func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 	query := `SELECT 
@@ -191,7 +341,6 @@ func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 		return []*types.Request{}, err
 	}
 	var x []*types.Request
-	var i int
 	defer row.Close()
 	var t int64
 	for row.Next() {
@@ -210,14 +359,13 @@ func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 			&r.CacheHit,
 			&r.Level,
 		)
+		slog.Info("t here is", "t", t)
 		if err != nil {
 			slog.Info("Got this error while trying to get all requests", "error", err)
 			return x, err
 		}
-		r.Time = time.Duration(t)
-		i = i + 1
+		r.Time = time.Duration(t * int64(time.Millisecond))
 		x = append(x, r)
 	}
 	return x, nil
-
 }

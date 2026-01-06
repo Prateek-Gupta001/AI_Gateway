@@ -16,6 +16,28 @@ const (
 	Medium Level = "medium"
 )
 
+var AllLevels = []Level{
+	Easy,
+	Medium,
+	High,
+}
+
+type ctxKey int
+
+const UserIdKey ctxKey = iota
+
+type IncTokenPayload struct {
+	UserId string
+	Tokens int
+	Level  Level
+	Ctx    context.Context
+}
+
+type InsertRequestPayload struct {
+	Request Request
+	Ctx     context.Context
+}
+
 type Role string
 
 const (
@@ -23,6 +45,13 @@ const (
 	RoleAssistant Role = "assistant"
 	RoleSystem    Role = "system"
 )
+
+type AnalyticsResponse struct {
+	CostSaved          float64
+	CacheHitPercentage float64
+	TimeSaved          time.Duration
+	Msg                string
+}
 
 type LLMResponse struct {
 	LLMRes       *bytes.Buffer

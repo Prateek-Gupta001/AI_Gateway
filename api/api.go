@@ -39,6 +39,7 @@ func (s *AIGateway) Run() {
 	r := http.NewServeMux()
 	r.HandleFunc("POST /chat", convertToHandleFunc(s.Chat))
 	r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
+	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
 		slog.Info("Got this error while trying to run the server ", "error", err)
 		panic(err)
@@ -86,8 +87,12 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	dynamic := checkTimeSensitivity(userQuery)
 	slog.Info("is query dynamic?", "dynamic", dynamic)
 	lenghtOfMsg := len(req.Messages)
+	if lenghtOfMsg == 0 {
+		http.Error(w, "No messages provided", http.StatusBadRequest)
+		return fmt.Errorf("no messages provided")
+	}
 	if !dynamic && lenghtOfMsg == 1 {
-		go s.embed.SumbitJob(embedCtx, userQuery, embeddingChan)
+		go s.embed.SubmitJob(embedCtx, userQuery, embeddingChan)
 		slog.Info("The query is not dynamic and its the first one! ..... being cached!")
 		req.CacheFlag = true
 	}
@@ -117,7 +122,8 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 			}
 			if exists {
 				end2 := time.Since(start)
-				err := s.store.InsertRequest(types.Request{
+				store_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
+				s.store.SubmitInsertRequest(store_ctx, types.Request{
 					Id:           request.Id,
 					Cacheable:    request.Cacheable,
 					UserId:       request.UserId,
@@ -149,9 +155,8 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return err
 	}
-	if err := s.store.IncrementUserTokens(req.UserId, llmResStruct.TotalTokens, llmResStruct.Level); err != nil {
-		slog.Error("Got this error while trying to increment the user Tokens", "error", err)
-	}
+	store_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
+	s.store.SubmitIncrementUserTokens(store_ctx, req.UserId, llmResStruct.TotalTokens, llmResStruct.Level)
 	slog.Info("REQEUST INFORMATION", "request.cachehit", request.CacheHit, "req.cacheflag", req.CacheFlag)
 	if !request.CacheHit && req.CacheFlag {
 		if embedding != nil {
@@ -184,9 +189,8 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	end := time.Since(start)
 	request.Time = end
 	slog.Info("inserting this request into the database!", "request", request)
-	if err := s.store.InsertRequest(request); err != nil {
-		slog.Info("Got this error while trying to insert the request in postgres db", "error", err, "request", request)
-	}
+	insert_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
+	s.store.SubmitInsertRequest(insert_ctx, request)
 
 	slog.Info("Query Answered!", "timeTaken", end)
 	slog.Info("Response from the LLM was generated succesfully! At the end of request", "llmResStruct", llmResStruct)
@@ -218,5 +222,14 @@ func (s *AIGateway) GetAllRequests(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	WriteJSON(w, http.StatusOK, requests)
+	return nil
+}
+
+func (s *AIGateway) GetCostSaved(w http.ResponseWriter, r *http.Request) error {
+	Analytics, err := s.store.GetAnalytics()
+	if err != nil {
+		return err
+	}
+	WriteJSON(w, http.StatusOK, Analytics)
 	return nil
 }
