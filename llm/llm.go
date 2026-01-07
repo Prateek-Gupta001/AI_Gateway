@@ -323,18 +323,10 @@ func callGeminiAPI(w http.ResponseWriter, messages []types.Messages, apikey stri
 				llmResStruct.LLMRes.WriteString(textChunk)
 			}
 
-			// Extract Token Usage (Usually in the last chunk)
 			if chunk.UsageMetadata != nil {
-				// Assuming you have these fields in your types.LLMResponse struct
-				// If not, you will need to add them.
 				llmResStruct.InputTokens = chunk.UsageMetadata.PromptTokenCount
 				llmResStruct.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
 				llmResStruct.TotalTokens = chunk.UsageMetadata.TotalTokenCount
-
-				slog.Info("Token usage captured",
-					"prompt", chunk.UsageMetadata.PromptTokenCount,
-					"output", chunk.UsageMetadata.CandidatesTokenCount,
-				)
 			}
 
 		}
@@ -392,9 +384,9 @@ type ResponsesStreamEvent struct {
 	SequenceNumber int    `json:"sequence_number"`
 
 	// Fields specific to different event types
-	Delta        string    `json:"delta,omitempty"`    // For output_text.delta
-	Response     *Response `json:"response,omitempty"` // For response.created/completed
-	Item         *Item     `json:"item,omitempty"`     // For output_item.added/done
+	Delta        string    `json:"delta,omitempty"`
+	Response     *Response `json:"response,omitempty"`
+	Item         *Item     `json:"item,omitempty"`
 	OutputIndex  int       `json:"output_index,omitempty"`
 	ContentIndex int       `json:"content_index,omitempty"`
 	ItemId       string    `json:"item_id,omitempty"`
@@ -402,20 +394,20 @@ type ResponsesStreamEvent struct {
 
 type Response struct {
 	ID     string `json:"id"`
-	Status string `json:"status"` // "in_progress", "completed", "incomplete", "failed"
+	Status string `json:"status"`
 	Usage  *Usage `json:"usage,omitempty"`
 }
 
 type Item struct {
 	ID      string    `json:"id"`
-	Type    string    `json:"type"` // e.g. "message"
+	Type    string    `json:"type"`
 	Role    string    `json:"role"`
 	Content []Content `json:"content"`
 	Status  string    `json:"status"`
 }
 
 type Content struct {
-	Type string `json:"type"` // "output_text"
+	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
