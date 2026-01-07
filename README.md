@@ -33,7 +33,7 @@ This is where most of the performance tuning happens.
 * **Strict Context Timeout Strategy:**
     * **The 200ms Rule:** A separate context timer tracks embedding generation. If it takes >200ms, the wait is aborted and the request is immediately forwarded to the LLM. The user never waits on a slow cache check.
     * **Background Caching:** Even if the cache is skipped, the worker continues processing the embedding in the background. If it completes, it's cached silently—ensuring the *next* user gets the fast cache hit.
-    
+
 ---
 
 ### 3. Smart LLM Routing
@@ -64,6 +64,25 @@ Every request and its metadata is logged to Postgres for analytics, with **zero 
   - **Cost Saved:** Calculated based on token usage avoided via cache.
   - **Cache Hit %:** Effectiveness of the semantic caching layer.
 
+## 🧠 Engineering Decisions & Trade-offs
+
+Building a system is about managing trade-offs. Here is why I made specific architectural choices:
+
+### 1. `net/http` vs. Frameworks (Gin/Fiber)
+* **Decision:** I stuck to Go's standard library (`net/http`) rather than using a framework like Gin or Fiber.
+* **The Trade-off:** While frameworks offer convenient routing and middleware macros, they introduce external dependencies, reflection overhead, and "magic" that obscures control flow.
+* **The Win:** By using the standard lib, I kept the binary size small, the memory footprint minimal, and the latency predictable. For a high-throughput Gateway, avoiding the overhead of a router based on reflection was a priority.
+
+### 2. Worker Pools vs. Unbounded Goroutines
+* **Decision:** I implemented a **Worker Pool pattern** for the Embedding Layer instead of spawning a new Goroutine for every incoming request.
+
+* **The Why (Backpressure):** Matrix multiplication (embedding generation) is CPU-intensive. If 1,000 requests hit the gateway simultaneously, spawning 1,000 Goroutines would cause CPU thrashing (excessive context switching) and likely trigger an OOM (Out of Memory) kill.
+* **The Win:** The Worker Pool applies **backpressure**. It limits concurrent heavy-lifting to a fixed number of workers (preventing resource exhaustion) while queuing excess requests. This ensures the system degrades gracefully under load rather than crashing.
+
+### 3. Latency vs. Consistency (The "Race" Strategy)
+* **Decision:** I allow the system to "fail open." If the embedding generation takes longer than 200ms, we skip the cache and go straight to the LLM.
+* **The Trade-off:** We might pay for an LLM token even if we *technically* had the answer in the cache (it was just too slow to retrieve).
+* **The Win:** **User Experience (UX) is king.** A user should never wait 500ms for a "cache miss" before the actual LLM generation even starts. We optimize for the P99 latency of the user, treating cost-saving as a secondary (but high) priority.
 ---
 
 ## 🛠️ How to Run

@@ -38,7 +38,7 @@ func main() {
 	cache := cache.NewQdrantCache()
 	go cache.ReviseCache(ctx)
 	embed := embed.NewEmbeddingService(2, 100)
-	server := api.NewAIGateway(":9000", store, llm, cache, embed)
+	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1)
 	slog.Info("Server is running on port 9000!")
 	server.Run()
 }

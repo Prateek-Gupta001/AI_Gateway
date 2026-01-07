@@ -18,26 +18,28 @@ import (
 )
 
 type AIGateway struct {
-	listenAddr string
-	store      store.Storage
-	llms       llm.LLMs
-	cache      cache.Cache
-	embed      embed.Embed
+	listenAddr        string
+	store             store.Storage
+	llms              llm.LLMs
+	cache             cache.Cache
+	embed             embed.Embed
+	rateLimitDuration int
 }
 
-func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Cache, embed embed.Embed) *AIGateway {
+func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Cache, embed embed.Embed, rateLimitDuration int) *AIGateway {
 	return &AIGateway{
-		listenAddr: addr,
-		store:      store,
-		llms:       llm,
-		cache:      cache,
-		embed:      embed,
+		listenAddr:        addr,
+		store:             store,
+		llms:              llm,
+		cache:             cache,
+		embed:             embed,
+		rateLimitDuration: rateLimitDuration,
 	}
 }
 
 func (s *AIGateway) Run() {
 	r := http.NewServeMux()
-	r.HandleFunc("POST /chat", convertToHandleFunc(s.Chat))
+	r.HandleFunc("POST /chat", s.RateLimiter(convertToHandleFunc((s.Chat))))
 	r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
@@ -63,10 +65,39 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 	}
 }
 
+func (s *AIGateway) RateLimiter(next http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("Executing the rate limiter middleware!")
+		userId := r.Header.Get("userId")
+		if userId == "" {
+			slog.Info("No userId provided!")
+			http.Error(w, "Bad Request! Access Denied", http.StatusBadRequest)
+			return
+		}
+		//rate limit of 1 request per seconds
+		rateLimitDuration := time.Duration(s.rateLimitDuration) * time.Second
+		CurrentTime := time.Now()
+		timeDiff := CurrentTime.Sub(UsersMap[userId])
+		fmt.Println("The time values here are", "map time", UsersMap[userId], "current time", CurrentTime, "time diff", timeDiff)
+		if timeDiff > rateLimitDuration {
+			slog.Info("Under rate limit!")
+			UsersMap[userId] = CurrentTime
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		slog.Info("Too many requests in a short period of time!")
+	}
+}
+
+var UsersMap = make(map[string]time.Time)
+
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
 	var req = &types.RequestStruct{}
+	userId := r.Header.Get("userId")
+	slog.Info("userId is", "userId", userId)
 	var request types.Request //this is the object that will be inserted in the db!
 	request.Id = uuid.NewString()
 	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*200)
@@ -97,7 +128,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 		req.CacheFlag = true
 	}
 	var embedding types.Embedding
-	request.UserId = req.UserId
+	request.UserId = userId
 	request.Cacheable = req.CacheFlag
 	slog.Info("cacheFlag", "cacheFlag", req.CacheFlag)
 	if req.CacheFlag {
@@ -122,7 +153,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 			}
 			if exists {
 				end2 := time.Since(start)
-				store_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
+				store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
 				s.store.SubmitInsertRequest(store_ctx, types.Request{
 					Id:           request.Id,
 					Cacheable:    request.Cacheable,
@@ -155,8 +186,8 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return err
 	}
-	store_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
-	s.store.SubmitIncrementUserTokens(store_ctx, req.UserId, llmResStruct.TotalTokens, llmResStruct.Level)
+	store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
+	s.store.SubmitIncrementUserTokens(store_ctx, userId, llmResStruct.TotalTokens, llmResStruct.Level)
 	slog.Info("REQEUST INFORMATION", "request.cachehit", request.CacheHit, "req.cacheflag", req.CacheFlag)
 	if !request.CacheHit && req.CacheFlag {
 		if embedding != nil {
@@ -189,7 +220,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	end := time.Since(start)
 	request.Time = end
 	slog.Info("inserting this request into the database!", "request", request)
-	insert_ctx := context.WithValue(context.Background(), types.UserIdKey, req.UserId)
+	insert_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
 	s.store.SubmitInsertRequest(insert_ctx, request)
 
 	slog.Info("Query Answered!", "timeTaken", end)
