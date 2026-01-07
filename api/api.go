@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/cache"
@@ -24,6 +25,7 @@ type AIGateway struct {
 	cache             cache.Cache
 	embed             embed.Embed
 	rateLimitDuration int
+	RateLimiter       *RateLimiter
 }
 
 func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Cache, embed embed.Embed, rateLimitDuration int) *AIGateway {
@@ -34,12 +36,15 @@ func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Ca
 		cache:             cache,
 		embed:             embed,
 		rateLimitDuration: rateLimitDuration,
+		RateLimiter: &RateLimiter{
+			Users: make(map[string]time.Time),
+		},
 	}
 }
 
 func (s *AIGateway) Run() {
 	r := http.NewServeMux()
-	r.HandleFunc("POST /chat", s.RateLimiter(convertToHandleFunc((s.Chat))))
+	r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
 	r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
@@ -65,7 +70,7 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 	}
 }
 
-func (s *AIGateway) RateLimiter(next http.Handler) http.HandlerFunc {
+func (s *AIGateway) RateLimit(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Executing the rate limiter middleware!")
 		userId := r.Header.Get("userId")
@@ -77,20 +82,28 @@ func (s *AIGateway) RateLimiter(next http.Handler) http.HandlerFunc {
 		//rate limit of 1 request per seconds
 		rateLimitDuration := time.Duration(s.rateLimitDuration) * time.Second
 		CurrentTime := time.Now()
-		timeDiff := CurrentTime.Sub(UsersMap[userId])
-		fmt.Println("The time values here are", "map time", UsersMap[userId], "current time", CurrentTime, "time diff", timeDiff)
+		s.RateLimiter.mu.Lock()
+
+		timeDiff := CurrentTime.Sub(s.RateLimiter.Users[userId])
+		fmt.Println("The time values here are", "map time", s.RateLimiter.Users[userId], "current time", CurrentTime, "time diff", timeDiff)
+
 		if timeDiff > rateLimitDuration {
 			slog.Info("Under rate limit!")
-			UsersMap[userId] = CurrentTime
+			s.RateLimiter.Users[userId] = CurrentTime
+			s.RateLimiter.mu.Unlock()
 			next.ServeHTTP(w, r)
 			return
 		}
+		s.RateLimiter.mu.Unlock()
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		slog.Info("Too many requests in a short period of time!")
 	}
 }
 
-var UsersMap = make(map[string]time.Time)
+type RateLimiter struct {
+	Users map[string]time.Time
+	mu    sync.Mutex
+}
 
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
