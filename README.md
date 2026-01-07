@@ -25,14 +25,15 @@ Instead of caching exact string matches, the system uses **semantic caching**.
 
 ---
 
-### 2. Resilient Embedding Layer (The “Race” Logic)
+### 2. Resilient Embedding Layer (The "Race" Logic)
 This is where most of the performance tuning happens.
 
-- **Local Embeddings:** Uses Cybertron, a pure Go transformer library, to generate embeddings locally in under ~90ms (no Python dependencies).
-- **Strict Context Timeout Strategy:**
-  - **The 200ms Rule:** A separate context timer tracks embedding generation. If embedding takes more than 200ms, the wait is aborted and the request is immediately forwarded to the LLM. The user never waits on a slow cache check.
-  - **Background Caching:** Even if the cache is skipped for the current request, embedding generation continues in a background Goroutine. If it completes within a reasonable limit, the result is cached silently—so the *next* user gets a fast cache hit.
-
+* **Local Embeddings:** Uses **Cybertron**, a pure Go transformer library, to generate embeddings locally in under ~90ms (no Python dependencies).
+* **Bounded Concurrency (Worker Pool):** instead of spawning a Goroutine per request (which risks CPU thrashing or OOM errors during high load), embedding tasks are queued into a buffered channel and processed by a fixed-size worker pool. This ensures predictable RAM usage and thread safety by limiting parallel inference tasks.
+* **Strict Context Timeout Strategy:**
+    * **The 200ms Rule:** A separate context timer tracks embedding generation. If it takes >200ms, the wait is aborted and the request is immediately forwarded to the LLM. The user never waits on a slow cache check.
+    * **Background Caching:** Even if the cache is skipped, the worker continues processing the embedding in the background. If it completes, it's cached silently—ensuring the *next* user gets the fast cache hit.
+    
 ---
 
 ### 3. Smart LLM Routing
