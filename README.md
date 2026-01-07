@@ -6,7 +6,7 @@ This project is a high-performance middleware built to drastically cut LLM costs
 
 The philosophy was simple: **optimise for cost without sacrificing a millisecond of latency**.
 
-I avoided heavy frameworks (like Gin or Fiber) and stuck to Go’s native `net/http` to ensure a lightweight, low-memory footprint.
+I avoided heavy frameworks (like Gin or Fiber) and stuck to Go's native `net/http` to ensure a lightweight, low-memory footprint.
 
 ---
 
@@ -51,6 +51,17 @@ Every request and its metadata is logged to Postgres for analytics, with **zero 
 - **Worker Pool Architecture:** Database writes are handled by a pool of background workers.
 - The main API handler *fires-and-forgets* log data to a channel and returns the response immediately.
 - This allows the system to handle traffic spikes without choking on DB locks or write latency.
+
+---
+
+### 5. Rate Limiting (Cost & Abuse Protection)
+Protects against runaway costs and ensures fair resource allocation.
+
+- **Per-User Limits:** Configurable request limits per API key/user to prevent individual users from exhausting the system.
+- **Global Throttling:** System-wide rate limits protect against traffic spikes and ensure predictable infrastructure costs.
+- **Graceful Degradation:** Rate-limited requests receive clear HTTP 429 responses, allowing clients to implement retry logic.
+
+This is critical for production deployments—without rate limiting, a single bad actor or misconfigured client could generate thousands of expensive LLM calls in seconds.
 
 ---
 
@@ -100,4 +111,3 @@ Building a system is about managing trade-offs. Here is why I made specific arch
    ```bash
     go run .
    ```
-
