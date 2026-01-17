@@ -16,6 +16,7 @@ import (
 	"github.com/Prateek-Gupta001/AI_Gateway/store"
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 )
 
 type AIGateway struct {
@@ -45,7 +46,7 @@ func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Ca
 func (s *AIGateway) Run() {
 	r := http.NewServeMux()
 	r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
-	r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
+	// r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
 		slog.Info("Got this error while trying to run the server ", "error", err)
@@ -105,36 +106,45 @@ type RateLimiter struct {
 	mu    sync.Mutex
 }
 
+var Tracer = otel.Tracer("ai-gateway-service")
+
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
+	ctx, span := Tracer.Start(r.Context(), "Chat")
+	defer span.End()
 	var req = &types.RequestStruct{}
 	userId := r.Header.Get("userId")
 	slog.Info("userId is", "userId", userId)
-	var request types.Request //this is the object that will be inserted in the db!
-	request.Id = uuid.NewString()
-	embedCtx, embedCancel := context.WithTimeout(r.Context(), time.Millisecond*200)
-	embedGenCtx, embedGenCtxCancel := context.WithTimeout(context.Background(), time.Millisecond*7000)
-	defer embedCancel()
-	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		slog.Info("Got this error while trying to decode the request struct ", "error", err)
 		return err
 	}
-	embeddingChan := make(chan types.EmbeddingResult, 1)
 	lastSlice := req.Messages[len(req.Messages)-1]
 	if lastSlice.Role != "user" {
 		http.Error(w, "The last role in the messages array cannot be either system or assistant!", http.StatusBadRequest)
 		return fmt.Errorf("request has last role other than user")
 	}
-	userQuery := lastSlice.Content
-	dynamic := checkTimeSensitivity(userQuery)
-	slog.Info("is query dynamic?", "dynamic", dynamic)
 	lenghtOfMsg := len(req.Messages)
 	if lenghtOfMsg == 0 {
 		http.Error(w, "No messages provided", http.StatusBadRequest)
 		return fmt.Errorf("no messages provided")
 	}
+	var request types.Request //this is the object that will be inserted in the db!
+	request.Id = uuid.NewString()
+	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*200)
+	detachedCtx := context.WithoutCancel(r.Context())
+	// STEP 2: Apply your specific 7-second logic to this valid, traced context
+	embedGenCtx, embedGenCtxCancel := context.WithTimeout(detachedCtx, 7*time.Second)
+	defer embedCancel()
+	defer r.Body.Close()
+
+	embeddingChan := make(chan types.EmbeddingResult, 1)
+
+	userQuery := lastSlice.Content
+	dynamic := checkTimeSensitivity(userQuery)
+	slog.Info("is query dynamic?", "dynamic", dynamic)
+
 	if !dynamic && lenghtOfMsg == 1 {
 		go s.embed.SubmitJob(embedCtx, userQuery, embeddingChan)
 		slog.Info("The query is not dynamic and its the first one! ..... being cached!")
@@ -152,7 +162,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 		case result := <-embeddingChan:
 			embedding = result.Embedding_Result
 			slog.Info("embedding generation was successful", "query", result.Query)
-			cacheRes, exists, err := s.cache.ExistsInCache(embedding, userQuery)
+			cacheRes, exists, err := s.cache.ExistsInCache(ctx, embedding, userQuery)
 			request.CacheHit = exists
 			if err != nil {
 				//exit the if/select block here and go onto checking the complexity of the query
@@ -194,7 +204,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	level := checkComplexity(userQuery)
 	slog.Info("checking the complexity of the userQuery!", "level", level)
 	llmResStruct := &types.LLMResponse{}
-	err := s.llms.GenerateResponse(w, req.Messages, level, llmResStruct) //TODO: change this to level only ... this is just for testing!
+	err := s.llms.GenerateResponse(ctx, w, req.Messages, level, llmResStruct) //TODO: change this to level only ... this is just for testing!
 	if err != nil {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return err
@@ -202,11 +212,12 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
 	s.store.SubmitIncrementUserTokens(store_ctx, userId, llmResStruct.TotalTokens, llmResStruct.Level)
 	slog.Info("REQEUST INFORMATION", "request.cachehit", request.CacheHit, "req.cacheflag", req.CacheFlag)
+	cache_insert_ctx := context.WithoutCancel(ctx)
 	if !request.CacheHit && req.CacheFlag {
 		if embedding != nil {
 			slog.Info("INSERTING INTO THE CACHE!")
 			//embedding worker produced on time!
-			go s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+			go s.cache.InsertIntoCache(cache_insert_ctx, embedding, *llmResStruct, userQuery)
 		} else {
 			slog.Info("inside the else")
 			go func() {
@@ -215,7 +226,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 				case result := <-embeddingChan:
 					slog.Info("The worker did not create the embedding on time ... now lazy caching!")
 					embedding = result.Embedding_Result
-					s.cache.InsertIntoCache(embedding, *llmResStruct, userQuery)
+					s.cache.InsertIntoCache(cache_insert_ctx, embedding, *llmResStruct, userQuery)
 				case <-embedGenCtx.Done():
 					slog.Info("Embedding Generation was taking longer than 7 seconds... skipping caching even though cacheable and cache miss")
 				}
@@ -259,15 +270,15 @@ func checkComplexity(query string) types.Level {
 	return types.Easy
 }
 
-func (s *AIGateway) GetAllRequests(w http.ResponseWriter, r *http.Request) error {
-	requests, err := s.store.GetAllRequests()
-	if err != nil {
-		slog.Error("got this error", "error", err.Error())
-		return err
-	}
-	WriteJSON(w, http.StatusOK, requests)
-	return nil
-}
+// func (s *AIGateway) GetAllRequests(w http.ResponseWriter, r *http.Request) error {
+// 	requests, err := s.store.GetAllRequests()
+// 	if err != nil {
+// 		slog.Error("got this error", "error", err.Error())
+// 		return err
+// 	}
+// 	WriteJSON(w, http.StatusOK, requests)
+// 	return nil
+// }
 
 func (s *AIGateway) GetCostSaved(w http.ResponseWriter, r *http.Request) error {
 	Analytics, err := s.store.GetAnalytics()

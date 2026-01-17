@@ -3,7 +3,8 @@ services:
   qdrant:
     image: qdrant/qdrant
     ports:
-      - "6333:6333"
+      - "6333:6333" # HTTP API
+      - "6334:6334" # gRPC API (Required for your Go client)
     volumes:
       - ./qdrant_storage:/qdrant/storage
 
@@ -17,3 +18,19 @@ services:
       - "5432:5432"
     volumes:
       - ./pg_data:/var/lib/postgresql/data
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686" # The UI: http://localhost:16686
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver (Used by your Go App)
+      - "14250:14250"
+      - "9411:9411"

@@ -359,7 +359,6 @@ func (s *PostgresStore) GetAllRequests() ([]*types.Request, error) {
 			&r.CacheHit,
 			&r.Level,
 		)
-		slog.Info("t here is", "t", t)
 		if err != nil {
 			slog.Info("Got this error while trying to get all requests", "error", err)
 			return x, err

@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +14,14 @@ import (
 	"strings"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
+	"go.opentelemetry.io/otel"
 )
 
 type LLMs interface {
-	GenerateResponse(http.ResponseWriter, []types.Messages, types.Level, *types.LLMResponse) error
+	GenerateResponse(context.Context, http.ResponseWriter, []types.Messages, types.Level, *types.LLMResponse) error
 }
+
+var Tracer = otel.Tracer("ai-gateway-service")
 
 type llmModel struct {
 	Level     types.Level
@@ -26,7 +30,7 @@ type llmModel struct {
 	Call      LLMProvider
 }
 
-type LLMProvider func(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error
+type LLMProvider func(ctx context.Context, w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error
 
 type LLMStruct struct {
 	Models []llmModel
@@ -44,13 +48,13 @@ func (s *LLMStruct) ChangeModel(modelname string) llmModel {
 	return s.Models[0]
 }
 
-func (s *LLMStruct) GenerateResponse(w http.ResponseWriter, messages []types.Messages, Level types.Level, llmResStruct *types.LLMResponse) error {
+func (s *LLMStruct) GenerateResponse(ctx context.Context, w http.ResponseWriter, messages []types.Messages, Level types.Level, llmResStruct *types.LLMResponse) error {
 	fmt.Println("got a request in generate response", w, messages, Level)
 	//could employ a strategy here to ensure that the ones giving off the error a lot of the time is not selected!
 	//also .. make a fake .. http buffer/stream .. that I could then use .. to test things .. and actually show this running!
 	for _, llm := range s.Models {
 		if llm.Level == Level {
-			return llm.Call(w, messages, llm.ApiKey, llmResStruct)
+			return llm.Call(ctx, w, messages, llm.ApiKey, llmResStruct)
 		}
 	}
 	return fmt.Errorf("Invalid Level type/ Not present in LLMStruct")
@@ -63,8 +67,10 @@ func NewLLMStruct() *LLMStruct {
 	}
 }
 
-func CallGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+func CallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
 	fmt.Println("got a request in generate response", messages)
+	ctx, span := Tracer.Start(ctx, "CallGptAPI")
+	defer span.End()
 	client := &http.Client{}
 
 	requestBody := map[string]interface{}{
@@ -163,7 +169,9 @@ func CallGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string,
 	return nil
 }
 
-func MockCallGptAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+func MockCallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+	ctx, span := Tracer.Start(ctx, "MockCallGptAPI")
+	defer span.End()
 	resp, err := http.Get("http://localhost:8080/test-stream")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -265,7 +273,9 @@ func CreateGeminiMessages(messages []types.Messages) []map[string]interface{} {
 	return msg
 }
 
-func CallGeminiAPI(w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+func CallGeminiAPI(ctx context.Context, w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
+	ctx, span := Tracer.Start(ctx, "CallGeminiAPI")
+	defer span.End()
 	client := &http.Client{}
 	jsonRequest := map[string]interface{}{
 		"contents": CreateGeminiMessages(messages),

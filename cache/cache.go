@@ -9,12 +9,15 @@ import (
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+var Tracer = otel.Tracer("ai-gateway-service")
+
 type Cache interface {
-	ExistsInCache(Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) //if found then "query answer", true, nil ..If not found then "", false, nil ..
-	InsertIntoCache(Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string)  //LLMAnswer will be stored in qdrant metadata!
+	ExistsInCache(ctx context.Context, Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) //if found then "query answer", true, nil ..If not found then "", false, nil ..
+	InsertIntoCache(ctx context.Context, Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string)  //LLMAnswer will be stored in qdrant metadata!
 }
 
 type QdrantCache struct {
@@ -67,8 +70,13 @@ func NewQdrantCache() *QdrantCache {
 	}
 }
 
-func (q *QdrantCache) ExistsInCache(Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) {
-	searchResult, err := q.Client.Query(context.Background(), &qdrant.QueryPoints{
+func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	ctx, span := Tracer.Start(ctx, "Qdrant.ExistsInCache")
+
+	defer span.End()
+	searchResult, err := q.Client.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: "AI_Gateway_Cache_1",
 		Query:          qdrant.NewQuery(Embedding...),
 		WithPayload:    qdrant.NewWithPayload(true),
@@ -98,9 +106,13 @@ func GetCachedRes(x map[string]*qdrant.Value) *types.CacheResponse {
 	return Res
 }
 
-func (q *QdrantCache) InsertIntoCache(Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string) {
+func (q *QdrantCache) InsertIntoCache(ctx context.Context, Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	ctx, span := Tracer.Start(ctx, "Qdrant.InsertIntoCache")
+	defer span.End()
 	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(userQuery)).String()
-	operationInfo, err := q.Client.Upsert(context.Background(), &qdrant.UpsertPoints{
+	operationInfo, err := q.Client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: "AI_Gateway_Cache_1",
 		Points: []*qdrant.PointStruct{
 			{

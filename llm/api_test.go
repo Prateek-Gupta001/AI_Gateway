@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http/httptest"
 	"testing"
@@ -30,7 +31,7 @@ func TestCallGptAPI_Integration(t *testing.T) {
 	// 4. Call the function
 	// Note: Your current implementation hardcodes the input prompt inside callGptAPI,
 	// so the 'messages' argument here is ignored, but we pass nil for now.
-	err := CallGptAPI(recorder, nil, apiKey, llmResStruct)
+	err := CallGptAPI(context.Background(), recorder, nil, apiKey, llmResStruct)
 
 	// 5. Assertions
 	if err != nil {

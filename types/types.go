@@ -49,7 +49,6 @@ const (
 type AnalyticsResponse struct {
 	CostSaved          float64
 	CacheHitPercentage float64
-	TimeSaved          time.Duration
 	Msg                string
 }
 

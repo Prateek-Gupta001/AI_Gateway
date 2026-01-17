@@ -12,6 +12,7 @@ import (
 	"github.com/Prateek-Gupta001/AI_Gateway/embed"
 	"github.com/Prateek-Gupta001/AI_Gateway/llm"
 	"github.com/Prateek-Gupta001/AI_Gateway/store"
+	"github.com/Prateek-Gupta001/AI_Gateway/telemetry"
 	"github.com/joho/godotenv"
 )
 
@@ -19,6 +20,17 @@ func main() {
 	opts := returnOpts()
 	ctx := context.Background()
 	err := godotenv.Load()
+	shutdown, err := telemetry.InitTracer("ai-gateway")
+	if err != nil {
+		slog.Error("failed to init tracer", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Telemetry has been intialised!")
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			slog.Error("failed to shutdown tracer", "error", err)
+		}
+	}()
 	if err != nil {
 		slog.Error("got this error while trying to load a dotenv file", "error", err)
 	}

@@ -10,11 +10,14 @@ import (
 	"github.com/nlpodyssey/cybertron/pkg/models/bert"
 	"github.com/nlpodyssey/cybertron/pkg/tasks"
 	"github.com/nlpodyssey/cybertron/pkg/tasks/textencoding"
+	"go.opentelemetry.io/otel"
 )
 
 type Embed interface {
 	SubmitJob(context.Context, string, chan types.EmbeddingResult)
 }
+
+var Tracer = otel.Tracer("ai-gateway-service")
 
 type EmbeddingService struct {
 	JobQueue chan types.EmbeddingJob
@@ -43,12 +46,13 @@ func Worker(id int, jobQueue chan types.EmbeddingJob) {
 	slog.Info("Worker loaded with model ready to create embeddings!", "id", id)
 	for job := range jobQueue {
 		slog.Info("Worker got a job!", "id", id)
+		ctx, span := Tracer.Start(job.Ctx, "WorkerProcessing")
 		start := time.Now()
 		if job.Ctx.Err() != nil {
 			continue
 		}
 		slog.Info("creating embedding", "query", job.Input)
-		result, err := m.Encode(context.Background(), job.Input, int(bert.MeanPooling))
+		result, err := m.Encode(ctx, job.Input, int(bert.MeanPooling))
 		slog.Info("Vector Preview", "v[0:5]", len(result.Vector.Data().F32()))
 		if err != nil {
 			job.ResultChan <- types.EmbeddingResult{
@@ -64,6 +68,7 @@ func Worker(id int, jobQueue chan types.EmbeddingJob) {
 		}
 		slog.Info("Work is almost complete! sending the results to the channel!", "id", id)
 		end := time.Since(start)
+		span.End()
 		select {
 		case <-job.Ctx.Done():
 			slog.Info("Worker did its job but timeout happened!", "id", id, "time_taken", end.String())
