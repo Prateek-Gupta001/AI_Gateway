@@ -95,7 +95,42 @@ Building a system is about managing trade-offs. Here is why I made specific arch
 * **The Trade-off:** We might pay for an LLM token even if we *technically* had the answer in the cache (it was just too slow to retrieve).
 * **The Win:** **User Experience (UX) is king.** A user should never wait 500ms for a "cache miss" before the actual LLM generation even starts. We optimize for the P99 latency of the user, treating cost-saving as a secondary (but high) priority.
 ---
+## ⚡ Performance & Observability
 
+The AI Gateway is fully instrumented with **OpenTelemetry (OTel)** to provide deep visibility into the request lifecycle. Traces are exported to **Jaeger** to visualize bottlenecks and verify architectural assumptions (like the "Race Logic" timeout).
+
+### The "Cache Win" (Benchmarks)
+By inspecting the traces, we can observe the massive latency and cost benefits of the Semantic Caching layer.
+
+| Metric | Direct LLM Call (Gemini Flash) | Cached Response (Qdrant) | **Improvement** |
+| :--- | :--- | :--- | :--- |
+| **Latency** | ~4.98s | ~88ms | **56x Faster** |
+| **Cost** | $$ (Input + Output Tokens) | $0.00 | **100% Savings** |
+| **Compute** | External API Dependency | Local Vector Lookup | 
+### 🔍 Trace Analysis
+
+#### 1. Cache Miss (The Slow Path)
+* **Duration:** 4.98s
+* **Bottleneck:** The request is dominated by the external LLM provider (Gemini). The application must wait for the full generation cycle.
+
+![Cache Miss Trace](https://github.com/user-attachments/assets/dcbceec3-e40e-4bdf-a2d6-f6982192783e)
+![Cache Miss Trace Full](https://github.com/user-attachments/assets/b63f36bf-73de-4332-aefc-7c1a06856a13)
+
+*(Figure 1: A standard request routed to Gemini. The long purple bar represents the external API wait time.)*
+
+#### 2. Cache Hit (The Fast Path)
+* **Duration:** 88ms
+* **Breakdown:** * `WorkerProcessing` (~60ms): Generating embeddings locally via Cybertron.
+    * `Qdrant.ExistsInCache` (~20ms): Vector similarity search.
+* **Result:** The user gets an answer instantly, and the request never touches the paid LLM API.
+
+![Cache Hit Trace](https://github.com/user-attachments/assets/aec5bd74-8ec1-4208-a6b2-53c31e38e193)
+![Cache Hit Trace Full](https://github.com/user-attachments/assets/86415a51-b141-4eb3-92c6-91613483f74d)
+
+*(Figure 2: A cached request. Note that the entire lifecycle completes in a fraction of the time it takes to even connect to the LLM.)*
+
+> **Note on Methodology:** Traces were captured locally using Jaeger and Docker. The "Cached" trace demonstrates the efficiency of the Go `net/http` handler + Qdrant local instance, bypassing network latency to external providers.
+---
 ## 🛠️ How to Run
 
 ### Prerequisites
