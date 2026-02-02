@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -74,6 +75,9 @@ func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding types.Embeddi
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	ctx, span := Tracer.Start(ctx, "Qdrant.ExistsInCache")
+	span.SetAttributes(
+		attribute.String("user_query", userQuery),
+	)
 
 	defer span.End()
 	searchResult, err := q.Client.Query(ctx, &qdrant.QueryPoints{
@@ -110,6 +114,9 @@ func (q *QdrantCache) InsertIntoCache(ctx context.Context, Embedding types.Embed
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	ctx, span := Tracer.Start(ctx, "Qdrant.InsertIntoCache")
+	span.SetAttributes(
+		attribute.String("user_query", userQuery),
+	)
 	defer span.End()
 	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(userQuery)).String()
 	operationInfo, err := q.Client.Upsert(ctx, &qdrant.UpsertPoints{

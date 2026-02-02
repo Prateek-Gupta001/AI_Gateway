@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/Prateek-Gupta001/AI_Gateway/cache"
 	"github.com/Prateek-Gupta001/AI_Gateway/embed"
 	"github.com/Prateek-Gupta001/AI_Gateway/llm"
@@ -17,6 +19,7 @@ import (
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type AIGateway struct {
@@ -45,9 +48,18 @@ func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Ca
 
 func (s *AIGateway) Run() {
 	r := http.NewServeMux()
-	r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
+	go func() {
+		slog.Info("Pprof attached: Pprof server running on localhost:6060")
+		// "nil" tells it to use the DefaultServeMux where pprof registered itself
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			slog.Error("Pprof failed", "error", err)
+		}
+	}()
+	// r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
+	r.HandleFunc("POST /chat", convertToHandleFunc((s.Chat)))
 	// r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
+	r.HandleFunc("GET /health", convertToHandleFunc(s.HealthCheck))
 	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
 		slog.Info("Got this error while trying to run the server ", "error", err)
 		panic(err)
@@ -71,35 +83,35 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 	}
 }
 
-func (s *AIGateway) RateLimit(next http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("Executing the rate limiter middleware!")
-		userId := r.Header.Get("userId")
-		if userId == "" {
-			slog.Info("No userId provided!")
-			http.Error(w, "Bad Request! Access Denied", http.StatusBadRequest)
-			return
-		}
-		//rate limit of 1 request per seconds
-		rateLimitDuration := time.Duration(s.rateLimitDuration) * time.Second
-		CurrentTime := time.Now()
-		s.RateLimiter.mu.Lock()
+// func (s *AIGateway) RateLimit(next http.Handler) http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		slog.Info("Executing the rate limiter middleware!")
+// 		userId := r.Header.Get("userId")
+// 		if userId == "" {
+// 			slog.Info("No userId provided!")
+// 			http.Error(w, "Bad Request! Access Denied", http.StatusBadRequest)
+// 			return
+// 		}
+// 		//rate limit of 1 request per seconds
+// 		rateLimitDuration := time.Duration(s.rateLimitDuration) * time.Second
+// 		CurrentTime := time.Now()
+// 		s.RateLimiter.mu.Lock()
 
-		timeDiff := CurrentTime.Sub(s.RateLimiter.Users[userId])
-		fmt.Println("The time values here are", "map time", s.RateLimiter.Users[userId], "current time", CurrentTime, "time diff", timeDiff)
+// 		timeDiff := CurrentTime.Sub(s.RateLimiter.Users[userId])
+// 		fmt.Println("The time values here are", "map time", s.RateLimiter.Users[userId], "current time", CurrentTime, "time diff", timeDiff)
 
-		if timeDiff > rateLimitDuration {
-			slog.Info("Under rate limit!")
-			s.RateLimiter.Users[userId] = CurrentTime
-			s.RateLimiter.mu.Unlock()
-			next.ServeHTTP(w, r)
-			return
-		}
-		s.RateLimiter.mu.Unlock()
-		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-		slog.Info("Too many requests in a short period of time!")
-	}
-}
+// 		if timeDiff > rateLimitDuration {
+// 			slog.Info("Under rate limit!")
+// 			s.RateLimiter.Users[userId] = CurrentTime
+// 			s.RateLimiter.mu.Unlock()
+// 			next.ServeHTTP(w, r)
+// 			return
+// 		}
+// 		s.RateLimiter.mu.Unlock()
+// 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+// 		slog.Info("Too many requests in a short period of time!")
+// 	}
+// }
 
 type RateLimiter struct {
 	Users map[string]time.Time
@@ -108,13 +120,23 @@ type RateLimiter struct {
 
 var Tracer = otel.Tracer("ai-gateway-service")
 
+func (m *AIGateway) HealthCheck(w http.ResponseWriter, r *http.Request) error {
+	slog.Info("Health check!")
+	WriteJSON(w, http.StatusOK, "Server is healthy!")
+	return nil
+}
+
 func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
 	ctx, span := Tracer.Start(r.Context(), "Chat")
+
 	defer span.End()
 	var req = &types.RequestStruct{}
 	userId := r.Header.Get("userId")
+	span.SetAttributes(
+		attribute.String("user_Id", userId),
+	)
 	slog.Info("userId is", "userId", userId)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		slog.Info("Got this error while trying to decode the request struct ", "error", err)
@@ -132,7 +154,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	}
 	var request types.Request //this is the object that will be inserted in the db!
 	request.Id = uuid.NewString()
-	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*200)
+	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*250)
 	detachedCtx := context.WithoutCancel(r.Context())
 	// STEP 2: Apply your specific 7-second logic to this valid, traced context
 	embedGenCtx, embedGenCtxCancel := context.WithTimeout(detachedCtx, 7*time.Second)
@@ -146,7 +168,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 	slog.Info("is query dynamic?", "dynamic", dynamic)
 
 	if !dynamic && lenghtOfMsg == 1 {
-		go s.embed.SubmitJob(embedCtx, userQuery, embeddingChan)
+		go s.embed.SubmitJob(embedGenCtx, userQuery, embeddingChan)
 		slog.Info("The query is not dynamic and its the first one! ..... being cached!")
 		req.CacheFlag = true
 	}
@@ -164,6 +186,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 			slog.Info("embedding generation was successful", "query", result.Query)
 			cacheRes, exists, err := s.cache.ExistsInCache(ctx, embedding, userQuery)
 			request.CacheHit = exists
+
 			if err != nil {
 				//exit the if/select block here and go onto checking the complexity of the query
 				//TODO: decide if you actually wanna treat a query api error as a cache miss .. cuz that would/could lead to similar query being cached twice!
@@ -224,7 +247,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 				defer embedGenCtxCancel()
 				select {
 				case result := <-embeddingChan:
-					slog.Info("The worker did not create the embedding on time ... now lazy caching!")
+					slog.Info("The worker did not create the embedding on time but in less than 7 seconds ... now lazy caching!")
 					embedding = result.Embedding_Result
 					s.cache.InsertIntoCache(cache_insert_ctx, embedding, *llmResStruct, userQuery)
 				case <-embedGenCtx.Done():
@@ -249,6 +272,9 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
 
 	slog.Info("Query Answered!", "timeTaken", end)
 	slog.Info("Response from the LLM was generated succesfully! At the end of request", "llmResStruct", llmResStruct)
+	span.SetAttributes(
+		attribute.Bool("cachehit", request.CacheHit),
+	)
 	return nil
 }
 

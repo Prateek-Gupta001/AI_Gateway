@@ -15,6 +15,7 @@ import (
 
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type LLMs interface {
@@ -172,7 +173,8 @@ func CallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types.Mes
 func MockCallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types.Messages, apikey string, llmResStruct *types.LLMResponse) error {
 	ctx, span := Tracer.Start(ctx, "MockCallGptAPI")
 	defer span.End()
-	resp, err := http.Get("http://localhost:8080/test-stream")
+
+	resp, err := http.Get("http://localhost:8082/test-stream")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -228,6 +230,14 @@ func MockCallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types
 	}
 	llmResStruct.Level = types.Easy
 	llmResStruct.Model = "GPT"
+	span.SetAttributes(
+		attribute.Int("total_tokens", llmResStruct.TotalTokens),
+		attribute.Int("input_tokens", llmResStruct.InputTokens),
+		attribute.Int("output_tokens", llmResStruct.OutputTokens),
+		attribute.String("model", llmResStruct.Model),
+		attribute.String("llmResponse", llmResStruct.LLMRes.String()),
+		attribute.String("level", string(llmResStruct.Level)),
+	)
 	return nil
 }
 

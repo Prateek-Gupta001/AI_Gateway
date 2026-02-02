@@ -11,6 +11,7 @@ import (
 	"github.com/nlpodyssey/cybertron/pkg/tasks"
 	"github.com/nlpodyssey/cybertron/pkg/tasks/textencoding"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Embed interface {
@@ -47,6 +48,9 @@ func Worker(id int, jobQueue chan types.EmbeddingJob) {
 	for job := range jobQueue {
 		slog.Info("Worker got a job!", "id", id)
 		ctx, span := Tracer.Start(job.Ctx, "WorkerProcessing")
+		span.SetAttributes(
+			attribute.String("input string", job.Input),
+		)
 		start := time.Now()
 		if job.Ctx.Err() != nil {
 			continue

@@ -49,7 +49,7 @@ func main() {
 	llm := llm.NewLLMStruct()
 	cache := cache.NewQdrantCache()
 	go cache.ReviseCache(ctx)
-	embed := embed.NewEmbeddingService(2, 100)
+	embed := embed.NewEmbeddingService(3, 1000)
 	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1)
 	slog.Info("Server is running on port 9000!")
 	server.Run()
