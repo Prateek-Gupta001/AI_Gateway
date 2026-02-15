@@ -18,7 +18,7 @@ func InitTracer(serviceName string) (func(context.Context) error, error) {
 	// Configure the OTLP HTTP exporter to send traces to Jaeger (localhost:4318)
 	exporter, err := otlptracehttp.New(ctx,
 		otlptracehttp.WithInsecure(), // Use HTTP, not HTTPS for local Jaeger
-		otlptracehttp.WithEndpoint("localhost:4318"),
+		otlptracehttp.WithEndpoint("localhost:4319"),
 	)
 	if err != nil {
 		return nil, err

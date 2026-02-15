@@ -46,8 +46,8 @@ func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Ca
 	}
 }
 
-func (s *AIGateway) Run() {
-	r := http.NewServeMux()
+func (s *AIGateway) Run(ctx context.Context, stop context.CancelFunc) (err error) {
+	defer stop()
 	go func() {
 		slog.Info("Pprof attached: Pprof server running on localhost:6060")
 		// "nil" tells it to use the DefaultServeMux where pprof registered itself
@@ -55,15 +55,43 @@ func (s *AIGateway) Run() {
 			slog.Error("Pprof failed", "error", err)
 		}
 	}()
+	r := s.newHTTPHandler()
+	srv := &http.Server{
+		Addr:         s.listenAddr,
+		ReadTimeout:  time.Second * 5,
+		WriteTimeout: time.Second * 30,
+		Handler:      r,
+	}
+	srvErr := make(chan error, 1)
+	go func() {
+		slog.Info("Running HTTP server...")
+		srvErr <- srv.ListenAndServe()
+	}()
+	select {
+	case err := <-srvErr:
+		return err
+	case <-ctx.Done():
+		stop()
+	}
+	slog.Info("Graceful Shutdown in progress!")
+	timeCtx, _ := context.WithTimeout(context.Background(), time.Second*20)
+	if err := srv.Shutdown(timeCtx); err != nil {
+		slog.Info("got this error while doing graceful shutdown", "error", err)
+		return err
+	}
+
+	slog.Info("Graceful shutdown successful!")
+	return nil
+
+}
+
+func (s *AIGateway) newHTTPHandler() *http.ServeMux {
+	r := http.NewServeMux()
 	// r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
 	r.HandleFunc("POST /chat", convertToHandleFunc((s.Chat)))
-	// r.HandleFunc("GET /getRequests", convertToHandleFunc(s.GetAllRequests))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	r.HandleFunc("GET /health", convertToHandleFunc(s.HealthCheck))
-	if err := http.ListenAndServe(s.listenAddr, r); err != nil {
-		slog.Info("Got this error while trying to run the server ", "error", err)
-		panic(err)
-	}
+	return r
 }
 
 type apiFunc func(http.ResponseWriter, *http.Request) error
@@ -82,36 +110,6 @@ func convertToHandleFunc(f apiFunc) http.HandlerFunc {
 		}
 	}
 }
-
-// func (s *AIGateway) RateLimit(next http.Handler) http.HandlerFunc {
-// 	return func(w http.ResponseWriter, r *http.Request) {
-// 		slog.Info("Executing the rate limiter middleware!")
-// 		userId := r.Header.Get("userId")
-// 		if userId == "" {
-// 			slog.Info("No userId provided!")
-// 			http.Error(w, "Bad Request! Access Denied", http.StatusBadRequest)
-// 			return
-// 		}
-// 		//rate limit of 1 request per seconds
-// 		rateLimitDuration := time.Duration(s.rateLimitDuration) * time.Second
-// 		CurrentTime := time.Now()
-// 		s.RateLimiter.mu.Lock()
-
-// 		timeDiff := CurrentTime.Sub(s.RateLimiter.Users[userId])
-// 		fmt.Println("The time values here are", "map time", s.RateLimiter.Users[userId], "current time", CurrentTime, "time diff", timeDiff)
-
-// 		if timeDiff > rateLimitDuration {
-// 			slog.Info("Under rate limit!")
-// 			s.RateLimiter.Users[userId] = CurrentTime
-// 			s.RateLimiter.mu.Unlock()
-// 			next.ServeHTTP(w, r)
-// 			return
-// 		}
-// 		s.RateLimiter.mu.Unlock()
-// 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-// 		slog.Info("Too many requests in a short period of time!")
-// 	}
-// }
 
 type RateLimiter struct {
 	Users map[string]time.Time
