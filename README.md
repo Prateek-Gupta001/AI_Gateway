@@ -1,8 +1,8 @@
 # High Performance AI Gateway with Semantic Caching
 
-**Tech Stack:** Golang (`net/http`), Qdrant (Vector DB), Postgres, Cybertron (Transformers in Go)
+**Tech Stack:** Golang (`net/http`), Qdrant (Vector DB), Postgres, gRPC, Python (Embedding Service)
 
-This project is a high-performance middleware built to drastically cut LLM costs for companies by intercepting and caching repeating queries. It sits between the user and providers (like OpenAI/Gemini), routing queries to the most cost-effective model based on complexity.
+This project is a high-performance middleware built to drastically cut LLM costs for companies by intercepting and repeating queries. It sits between the user and providers (like OpenAI/Gemini), routing queries to the most cost-effective model based on complexity.
 
 The philosophy was simple: **optimise for cost without sacrificing a millisecond of latency**.
 
@@ -13,136 +13,125 @@ I avoided heavy frameworks (like Gin or Fiber) and stuck to Go's native `net/htt
 ## 🏗️ Architecture
 <img width="2379" height="912" alt="image" src="https://github.com/user-attachments/assets/c0aa5c48-816c-48d3-96c1-fd1866c0d49b" />
 
-## 🚀 Key Features:
+---
 
+## 🔥 Performance Engineering: The "Flame Graph" Refactor using Pprof
+
+During the initial development, I identified a critical bottleneck. The embedding model (originally running directly in Go via Cybertron) was throttling the CPU.
+
+### 1. The Bottleneck (CPU-Bound Monolith)
+Profiling the application with `pprof` revealed that matrix multiplication operations (`DotProdAVX32`) were consuming nearly 100% of the CPU time. This "stop-the-world" math computation blocked the Go runtime, preventing it from handling concurrent HTTP requests efficiently.
+
+<img width="1916" height="766" alt="Screenshot 2026-01-18 145340" src="https://github.com/user-attachments/assets/b7852922-8d63-4f1c-ab0a-917ec4710ed2" />
+
+*(Figure 1: Before Optimization. The wide orange bars show the CPU stuck performing vector math, leaving no room for I/O handling.)*
+
+
+### 2. The Solution (Decoupling via gRPC)
+To fix this, I refactored the architecture by extracting the embedding layer into a **dedicated Python microservice** running the BGE-M3 model, communicating with the Go Gateway via **gRPC**.
+
+### 3. The Result (I/O-Bound Distributed System)
+The new profile shows a drastic transformation. The Go Gateway is now **I/O-bound**, spending its time efficiently scheduling goroutines and waiting on network calls (`grpc.Invoke`). The heavy compute is isolated in the Python service, allowing the Gateway to maintain high throughput and concurrency without locking the main thread.
+
+<img width="1919" height="734" alt="Screenshot 2026-02-16 165602" src="https://github.com/user-attachments/assets/483de937-b9ca-4e71-8001-409f34a823ed" />
+
+*(Figure 2: After Optimization. The load is distributed. The CPU is no longer choked by a single function, and the runtime efficiently manages network wait times.)*
+
+---
+
+## 🚀 Key Features:
 
 ### 1. Semantic Caching (The Cost Cutter)
 Instead of caching exact string matches, the system uses **semantic caching**.
 
-- **Vector Database:** Qdrant is used for its speed and high RAM efficiency compared to alternatives.
-- **Freshness:** Query payloads are inserted with a TTL (Time-To-Live). A background Goroutine runs at specified intervals to sweep and clear old cache entries, ensuring data freshness without manual intervention.
-- **Logic:** Non-dynamic / time-insensitive queries are intercepted. If a similar question exists in the vector store, the cached answer is served instantly (<200ms), completely bypassing the expensive LLM call.
+- **Vector Database:** Qdrant is used for its speed and high RAM efficiency.
+- **Freshness:** Query payloads are inserted with a TTL (Time-To-Live). A background Goroutine runs at specified intervals to sweep and clear old cache entries.
+- **Logic:** Non-dynamic queries are intercepted. If a similar question exists in the vector store, the cached answer is served instantly (<200ms), completely bypassing the expensive LLM call.
 
----
+### 2. Decoupled Embedding Layer (gRPC Microservice)
+This is where the system ensures scalability.
 
-### 2. Resilient Embedding Layer (The "Race" Logic)
-This is where most of the performance tuning happens.
-
-* **Local Embeddings:** Uses **Cybertron**, a pure Go transformer library, to generate embeddings locally in under ~90ms (no Python dependencies).
-* **Bounded Concurrency (Worker Pool):** instead of spawning a Goroutine per request (which risks CPU thrashing or OOM errors during high load), embedding tasks are queued into a buffered channel and processed by a fixed-size worker pool. This ensures predictable RAM usage and thread safety by limiting parallel inference tasks.
-* **Strict Context Timeout Strategy:**
-    * **The 200ms Rule:** A separate context timer tracks embedding generation. If it takes >200ms, the wait is aborted and the request is immediately forwarded to the LLM. The user never waits on a slow cache check.
-    * **Background Caching:** Even if the cache is skipped, the worker continues processing the embedding in the background. If it completes, it's cached silently—ensuring the *next* user gets the fast cache hit.
-
----
+* **Microservice Architecture:** The embedding generation is offloaded to a lightweight Python service via **gRPC**. This allows the Go server to remain responsive even under heavy load.
+* **Model Maturity:** Using Python allows access to state-of-the-art embedding models (like BGE-M3) and optimized libraries (ONNX/PyTorch) that are more mature than their Go counterparts.
+* **Strict Context Timeouts:** The Gateway enforces a strict **200ms** timeout on the gRPC call. If the embedding service is too slow, the request "fails open" and proceeds directly to the LLM to preserve user experience.
 
 ### 3. Smart LLM Routing
 Not every query needs GPT-4.
 
 - Incoming queries are classified as **Simple** or **Complex**.
-- **Simple Queries:** Routed to cheaper and faster models (maximum cost savings).
-- **Complex Queries:** Routed to more capable (and more expensive) reasoning models.
-
----
+- **Simple Queries:** Routed to cheaper and faster models.
+- **Complex Queries:** Routed to reasoning models.
 
 ### 4. Non-Blocking Storage Layer (Worker Pools)
-Every request and its metadata is logged to Postgres for analytics, with **zero impact on API latency**.
+Every request and its metadata is logged to Postgres for analytics with **zero impact on API latency**.
 
 - **Worker Pool Architecture:** Database writes are handled by a pool of background workers.
 - The main API handler *fires-and-forgets* log data to a channel and returns the response immediately.
-- This allows the system to handle traffic spikes without choking on DB locks or write latency.
-
----
 
 ### 5. Rate Limiting (Cost & Abuse Protection)
 Protects against runaway costs and ensures fair resource allocation.
 
-- **Per-User Limits:** Configurable request limits per API key/user to prevent individual users from exhausting the system.
-- **Global Throttling:** System-wide rate limits protect against traffic spikes and ensure predictable infrastructure costs.
-- **Graceful Degradation:** Rate-limited requests receive clear HTTP 429 responses, allowing clients to implement retry logic.
-
-This is critical for production deployments—without rate limiting, a single bad actor or misconfigured client could generate thousands of expensive LLM calls in seconds.
+- **Per-User Limits:** Configurable request limits per API key.
+- **Global Throttling:** System-wide rate limits protect against traffic spikes.
+- **Graceful Degradation:** Rate-limited requests receive clear HTTP 429 responses.
 
 ---
 
 ## 📊 Endpoints
 
-- **POST `/chat`**  
-  Main entry point. Handles semantic search, routing, and response generation.
+- **POST `/chat`** Main entry point. Handles semantic search, routing, and response generation.
 
-- **GET `/stats`**  
-  Returns real-time analytics on gateway performance:
-  - **Cost Saved:** Calculated based on token usage avoided via cache.
-  - **Cache Hit %:** Effectiveness of the semantic caching layer.
+- **GET `/stats`** Returns real-time analytics on gateway performance (Cost Saved, Cache Hit %).
+
+---
 
 ## 🧠 Engineering Decisions & Trade-offs
 
-Building a system is about managing trade-offs. Here is why I made specific architectural choices:
+### 1. `net/http` vs. Frameworks
+* **Decision:** Stuck to Go's standard library (`net/http`) over Gin/Fiber.
+* **The Win:** Minimal memory footprint and no reflection overhead, critical for a high-throughput middleware.
 
-### 1. `net/http` vs. Frameworks (Gin/Fiber)
-* **Decision:** I stuck to Go's standard library (`net/http`) rather than using a framework like Gin or Fiber.
-* **The Trade-off:** While frameworks offer convenient routing and middleware macros, they introduce external dependencies, reflection overhead, and "magic" that obscures control flow.
-* **The Win:** By using the standard lib, I kept the binary size small, the memory footprint minimal, and the latency predictable. For a high-throughput Gateway, avoiding the overhead of a router based on reflection was a priority.
-
-### 2. Worker Pools vs. Unbounded Goroutines
-* **Decision:** I implemented a **Worker Pool pattern** for the Embedding Layer instead of spawning a new Goroutine for every incoming request.
-
-* **The Why (Backpressure):** Matrix multiplication (embedding generation) is CPU-intensive. If 1,000 requests hit the gateway simultaneously, spawning 1,000 Goroutines would cause CPU thrashing (excessive context switching) and likely trigger an OOM (Out of Memory) kill.
-* **The Win:** The Worker Pool applies **backpressure**. It limits concurrent heavy-lifting to a fixed number of workers (preventing resource exhaustion) while queuing excess requests. This ensures the system degrades gracefully under load rather than crashing.
+### 2. Monolith vs. Microservices (The Pivot)
+* **Decision:** Moved from pure Go embeddings to a Python gRPC service.
+* **The Why:** Go is excellent for I/O and concurrency, but Python (with C++ bindings) is superior for Tensor operations.
+* **The Win:** By letting each language do what it does best, I achieved **Heterogeneous Scaling**. I can now scale the lightweight Gateway separately from the compute-heavy Embedding Service.
 
 ### 3. Latency vs. Consistency (The "Race" Strategy)
-* **Decision:** I allow the system to "fail open." If the embedding generation takes longer than 200ms, we skip the cache and go straight to the LLM.
-* **The Trade-off:** We might pay for an LLM token even if we *technically* had the answer in the cache (it was just too slow to retrieve).
-* **The Win:** **User Experience (UX) is king.** A user should never wait 500ms for a "cache miss" before the actual LLM generation even starts. We optimize for the P99 latency of the user, treating cost-saving as a secondary (but high) priority.
+* **Decision:** "Fail open" on cache misses or timeouts.
+* **The Win:** **User Experience is king.** We optimize for P99 latency, ensuring no user waits excessively for a cache check.
+
 ---
+
 ## ⚡ Performance & Observability
 
-The AI Gateway is fully instrumented with **OpenTelemetry (OTel)** to provide deep visibility into the request lifecycle. Traces are exported to **Jaeger** to visualize bottlenecks and verify architectural assumptions (like the "Race Logic" timeout).
+The AI Gateway is fully instrumented with **OpenTelemetry (OTel)** to provide deep visibility into the request lifecycle. Traces are exported to **Jaeger**.
 
 ### The "Cache Win" (Benchmarks)
-By inspecting the traces, we can observe the massive latency and cost benefits of the Semantic Caching layer.
 
 | Metric | Direct LLM Call (Gemini Flash) | Cached Response (Qdrant) | **Improvement** |
 | :--- | :--- | :--- | :--- |
 | **Latency** | ~4.98s | ~88ms | **56x Faster** |
 | **Cost** | $$ (Input + Output Tokens) | $0.00 | **100% Savings** |
-| **Compute** | External API Dependency | Local Vector Lookup | 
-### 🔍 Trace Analysis
 
-#### 1. Cache Miss (The Slow Path)
-* **Duration:** 4.98s
-* **Bottleneck:** The request is dominated by the external LLM provider (Gemini). The application must wait for the full generation cycle.
-
-![Cache Miss Trace](https://github.com/user-attachments/assets/dcbceec3-e40e-4bdf-a2d6-f6982192783e)
-![Cache Miss Trace Full](https://github.com/user-attachments/assets/b63f36bf-73de-4332-aefc-7c1a06856a13)
-
-*(Figure 1: A standard request routed to Gemini. The long purple bar represents the external API wait time.)*
-
-#### 2. Cache Hit (The Fast Path)
-* **Duration:** 88ms
-* **Breakdown:** * `WorkerProcessing` (~60ms): Generating embeddings locally via Cybertron.
-    * `Qdrant.ExistsInCache` (~20ms): Vector similarity search.
-* **Result:** The user gets an answer instantly, and the request never touches the paid LLM API.
-
-![Cache Hit Trace](https://github.com/user-attachments/assets/aec5bd74-8ec1-4208-a6b2-53c31e38e193)
-![Cache Hit Trace Full](https://github.com/user-attachments/assets/86415a51-b141-4eb3-92c6-91613483f74d)
-
-*(Figure 2: A cached request. Note that the entire lifecycle completes in a fraction of the time it takes to even connect to the LLM.)*
-
-> **Note on Methodology:** Traces were captured locally using Jaeger and Docker. The "Cached" trace demonstrates the efficiency of the Go `net/http` handler + Qdrant local instance, bypassing network latency to external providers.
 ---
+
 ## 🛠️ How to Run
 
 ### Prerequisites
 * Go 1.22+
 * Docker & Docker Compose
+* Make (optional, for convenience)
 
 ### Quick Start
-1. **Start the Infrastructure** (Postgres & Qdrant):
+1. **Start the Infrastructure** (Postgres, Qdrant, & Python Service):
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 2. **Run the AI Gateway**:
    ```bash
-    go run .
+   make run
    ```
+   
+
+Bash
+make run
