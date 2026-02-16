@@ -132,6 +132,3 @@ The AI Gateway is fully instrumented with **OpenTelemetry (OTel)** to provide de
    make run
    ```
    
-
-Bash
-make run
