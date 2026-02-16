@@ -6,3 +6,5 @@
 models/
 
 pg_data/
+
+qdrant_storage/

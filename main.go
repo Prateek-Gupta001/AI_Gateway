@@ -39,6 +39,7 @@ func PrintBanner() {
 
 func main() {
 	PrintBanner()
+	semantic_cache := true
 	opts := returnOpts()
 	ctx := context.Background()
 	err := godotenv.Load()
@@ -70,10 +71,19 @@ func main() {
 		panic(err2)
 	}
 	llm := llm.NewLLMStruct()
-	cache := cache.NewQdrantCache()
+	cache, err := cache.NewQdrantCache()
+	if err != nil {
+		slog.Info("Got an error while trying to setup the qdrant cache", "error", err)
+		semantic_cache = false
+	}
 	go cache.ReviseCache(ctx)
-	embed := embed.NewEmbeddingService(3, 1000)
-	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1)
+	embed, err := embed.NewEmbeddingService("localhost:50051")
+	if err != nil {
+		slog.Info("Embedding Service Failed!")
+		semantic_cache = false
+	}
+	slog.Info("Semantic Cache: ", "up: ", semantic_cache)
+	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1, semantic_cache)
 	slog.Info("Server is running on port 9000!")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	if err := server.Run(ctx, stop); err != nil {

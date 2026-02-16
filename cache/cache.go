@@ -17,8 +17,8 @@ import (
 var Tracer = otel.Tracer("ai-gateway-service")
 
 type Cache interface {
-	ExistsInCache(ctx context.Context, Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) //if found then "query answer", true, nil ..If not found then "", false, nil ..
-	InsertIntoCache(ctx context.Context, Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string)  //LLMAnswer will be stored in qdrant metadata!
+	ExistsInCache(ctx context.Context, Embedding *types.DenseEmbedding, userQuery string) (types.CacheResponse, bool, error) //if found then "query answer", true, nil ..If not found then "", false, nil ..
+	InsertIntoCache(ctx context.Context, Embedding *types.DenseEmbedding, llmResStruct types.LLMResponse, userQuery string)  //LLMAnswer will be stored in qdrant metadata!
 }
 
 type QdrantCache struct {
@@ -26,7 +26,7 @@ type QdrantCache struct {
 	Threshold float32
 }
 
-func NewQdrantCache() *QdrantCache {
+func NewQdrantCache() (*QdrantCache, error) {
 	//intialise the qdrant client
 	client, err := qdrant.NewClient(&qdrant.Config{
 		Host: "localhost",
@@ -38,7 +38,7 @@ func NewQdrantCache() *QdrantCache {
 		//don't panic .. just return a flag which tells you .. okay .. caching layer is not working .. proceed without it!
 		//Graceful degradation!
 		//Do This!!!
-		panic(err)
+		return nil, err
 	}
 	exists, err1 := client.CollectionExists(context.Background(), "AI_Gateway_Cache_1")
 	if err1 != nil {
@@ -67,11 +67,11 @@ func NewQdrantCache() *QdrantCache {
 	}
 	return &QdrantCache{
 		Client:    client,
-		Threshold: 0.85,
-	}
+		Threshold: 0.9,
+	}, nil
 }
 
-func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding types.Embedding, userQuery string) (types.CacheResponse, bool, error) {
+func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding *types.DenseEmbedding, userQuery string) (types.CacheResponse, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	ctx, span := Tracer.Start(ctx, "Qdrant.ExistsInCache")
@@ -82,7 +82,7 @@ func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding types.Embeddi
 	defer span.End()
 	searchResult, err := q.Client.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: "AI_Gateway_Cache_1",
-		Query:          qdrant.NewQuery(Embedding...),
+		Query:          qdrant.NewQuery(Embedding.Values...),
 		WithPayload:    qdrant.NewWithPayload(true),
 		ScoreThreshold: &q.Threshold,
 	})
@@ -92,7 +92,7 @@ func (q *QdrantCache) ExistsInCache(ctx context.Context, Embedding types.Embeddi
 	}
 	slog.Info("These are the search results", "results", searchResult)
 	for _, results := range searchResult {
-		slog.Info("CACHE HIT! Found something in the cache!")
+		slog.Info("CACHE HIT!", "similarity", results.Score)
 		x := results.Payload
 		Res := GetCachedRes(x)
 		return *Res, true, nil
@@ -110,7 +110,7 @@ func GetCachedRes(x map[string]*qdrant.Value) *types.CacheResponse {
 	return Res
 }
 
-func (q *QdrantCache) InsertIntoCache(ctx context.Context, Embedding types.Embedding, llmResStruct types.LLMResponse, userQuery string) {
+func (q *QdrantCache) InsertIntoCache(ctx context.Context, Embedding *types.DenseEmbedding, llmResStruct types.LLMResponse, userQuery string) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	ctx, span := Tracer.Start(ctx, "Qdrant.InsertIntoCache")
@@ -124,7 +124,7 @@ func (q *QdrantCache) InsertIntoCache(ctx context.Context, Embedding types.Embed
 		Points: []*qdrant.PointStruct{
 			{
 				Id:      qdrant.NewIDUUID(id),
-				Vectors: qdrant.NewVectors(Embedding...),
+				Vectors: qdrant.NewVectors(Embedding.Values...),
 				Payload: qdrant.NewValueMap(map[string]any{
 					"InputTokens":  llmResStruct.InputTokens,
 					"OutputTokens": llmResStruct.OutputTokens,

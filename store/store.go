@@ -14,7 +14,7 @@ import (
 )
 
 type Storage interface {
-	SubmitInsertRequest(context.Context, types.Request)
+	SubmitInsertRequest(context.Context, *types.Request)
 	SubmitIncrementUserTokens(context.Context, string, int, types.Level)
 	GetAnalytics() (types.AnalyticsResponse, error)
 	GetAllRequests() ([]*types.Request, error)
@@ -46,10 +46,10 @@ func (s *PostgresStore) StoreWorker(id int) {
 	}
 }
 
-func (s *PostgresStore) SubmitInsertRequest(ctx context.Context, request types.Request) {
+func (s *PostgresStore) SubmitInsertRequest(ctx context.Context, request *types.Request) {
 	select {
 	case s.InsertRequestChan <- types.InsertRequestPayload{
-		Request: request,
+		Request: *request,
 		Ctx:     ctx,
 	}:
 

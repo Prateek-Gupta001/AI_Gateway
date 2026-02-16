@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+option go_package = "github.com/Prateek-Gupta001/GoMemory";
+
+package embeddingService;
+
+service EmbeddingService {
+    rpc CreateEmbeddings (Queries) returns (Embeddings);
+    rpc CreateDenseEmbedding (Query) returns (DenseEmbedding);
+}
+
+message Queries {
+    repeated string queries = 1;
+}
+
+message Embeddings {
+    repeated DenseEmbedding dense_embeddings = 1;
+    
+    repeated SparseEmbedding sparse_embeddings = 2;
+}
+
+message Query {
+    string query = 1;
+}
+
+message DenseEmbedding {
+    repeated float values = 1; 
+}
+
+message SparseEmbedding {
+    repeated uint32 indices = 1;
+    repeated float values = 2; 
+}

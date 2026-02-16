@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-type Embedding []float32
+type DenseEmbedding struct {
+	Values []float32 `json:"values"`
+}
 
 type Level string
 
@@ -62,7 +64,7 @@ type LLMResponse struct {
 }
 
 type EmbeddingResult struct {
-	Embedding_Result Embedding
+	Embedding_Result *DenseEmbedding
 	Query            string
 	Err              error
 }
@@ -79,9 +81,7 @@ type Messages struct {
 }
 
 type RequestStruct struct {
-	UserId    string     `json:"userId"`
-	Messages  []Messages `json:"messages"`
-	CacheFlag bool
+	Messages []Messages `json:"messages"`
 }
 
 type CacheResponse struct {
@@ -98,17 +98,26 @@ type Account struct {
 	Num_Requests   int
 }
 
+type EmbedGenStatus int
+
+const (
+	EmbedGenPending EmbedGenStatus = iota
+	EmbedGenSuccess
+	EmbedGenErrored
+)
+
 type Request struct {
-	Id           string
-	Cacheable    bool
-	UserId       string
-	UserQuery    string
-	LLMResponse  string
-	InputTokens  int
-	OutputTokens int
-	TotalToken   int
-	Time         time.Duration
-	Model        string
-	CacheHit     bool
-	Level        Level
+	Id              string
+	Cacheable       bool
+	EmbedGenSuccess EmbedGenStatus
+	UserId          string
+	UserQuery       string
+	LLMResponse     string
+	InputTokens     int
+	OutputTokens    int
+	TotalToken      int
+	Time            time.Duration
+	Model           string
+	CacheHit        bool
+	Level           Level
 }

@@ -1,1 +1,0 @@
-{"indexed_fields":{"TTL":"datetime"},"indexed_types":{"TTL":[{"index_type":"datetime_index","mutability":"mutable","storage_type":"gridstore"},{"index_type":"null_index","mutability":"mutable","storage_type":{"mmap":{"is_on_disk":false}}}]},"skip_rocksdb":true}
