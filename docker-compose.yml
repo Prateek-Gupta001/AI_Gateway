@@ -21,6 +21,12 @@ services:
     volumes:
       - ./pg_data:/var/lib/postgresql/data
 
+  embedding:
+    image: prateek329/embedding-service
+    container_name: AI_Gateway_embedding-microservice
+    ports:
+      - "50051:50051"
+
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: AI_Gateway_jaeger
