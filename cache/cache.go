@@ -67,7 +67,7 @@ func NewQdrantCache() (*QdrantCache, error) {
 	}
 	return &QdrantCache{
 		Client:    client,
-		Threshold: 0.9,
+		Threshold: 0.8,
 	}, nil
 }
 

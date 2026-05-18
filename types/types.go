@@ -81,6 +81,7 @@ type Messages struct {
 }
 
 type RequestStruct struct {
+	Model    string     `json:"model,omitempty"`
 	Messages []Messages `json:"messages"`
 }
 

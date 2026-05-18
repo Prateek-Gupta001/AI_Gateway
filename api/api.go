@@ -45,18 +45,19 @@ func NewAIGateway(addr string, store store.Storage, llm llm.LLMs, cache cache.Ca
 		RateLimiter: &RateLimiter{
 			Users: make(map[string]time.Time),
 		},
+		//Extra configs such as dev or prod.
 	}
 }
 
 func (s *AIGateway) Run(ctx context.Context, stop context.CancelFunc) (err error) {
 	defer stop()
-	go func() {
-		slog.Info("Pprof attached: Pprof server running on localhost:6060")
-		// "nil" tells it to use the DefaultServeMux where pprof registered itself
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			slog.Error("Pprof failed", "error", err)
-		}
-	}()
+	// go func() {
+	// 	slog.Info("Pprof attached: Pprof server running on localhost:6060")
+	// 	// "nil" tells it to use the DefaultServeMux where pprof registered itself
+	// 	if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+	// 		slog.Error("Pprof failed", "error", err)
+	// 	}
+	// }()
 	r := s.newHTTPHandler()
 	srv := &http.Server{
 		Addr:         s.listenAddr,
@@ -90,7 +91,7 @@ func (s *AIGateway) Run(ctx context.Context, stop context.CancelFunc) (err error
 func (s *AIGateway) newHTTPHandler() *http.ServeMux {
 	r := http.NewServeMux()
 	// r.HandleFunc("POST /chat", s.RateLimit(convertToHandleFunc((s.Chat))))
-	r.HandleFunc("POST /chat", convertToHandleFunc((s.RefactoredChat)))
+	r.HandleFunc("POST /chat", convertToHandleFunc((s.Chat)))
 	r.HandleFunc("GET /stats", convertToHandleFunc(s.GetCostSaved))
 	r.HandleFunc("GET /health", convertToHandleFunc(s.HealthCheck))
 	return r
@@ -133,165 +134,7 @@ func (m *AIGateway) HealthCheck(w http.ResponseWriter, r *http.Request) *APIErro
 	return nil
 }
 
-// func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) error {
-// 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
-// 	start := time.Now()
-// 	ctx, span := Tracer.Start(r.Context(), "Chat")
-
-// 	defer span.End()
-// 	var req = &types.RequestStruct{}
-// 	userId := r.Header.Get("userId")
-// 	span.SetAttributes(
-// 		attribute.String("user_Id", userId),
-// 	)
-// 	slog.Info("userId is", "userId", userId)
-// 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-// 		slog.Info("Got this error while trying to decode the request struct ", "error", err)
-// 		return err
-// 	}
-// 	defer r.Body.Close()
-// 	lastSlice := req.Messages[len(req.Messages)-1]
-// 	if lastSlice.Role != "user" {
-// 		http.Error(w, "The last role in the messages array cannot be either system or assistant!", http.StatusBadRequest)
-// 		return fmt.Errorf("request has last role other than user")
-// 	}
-// 	lenghtOfMsg := len(req.Messages)
-// 	if lenghtOfMsg == 0 {
-// 		http.Error(w, "No messages provided", http.StatusBadRequest)
-// 		return fmt.Errorf("no messages provided")
-// 	}
-// 	request := &types.Request{} //this is the object that will be inserted in the db!
-// 	request.Id = uuid.NewString()
-// 	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*300)
-// 	detachedCtx := context.WithoutCancel(r.Context())
-// 	// STEP 2: Apply your specific 7-second logic to this valid, traced context
-// 	embedGenCtx, embedGenCtxCancel := context.WithTimeout(detachedCtx, 7*time.Second)
-// 	defer embedCancel()
-
-// 	embeddingChan := make(chan types.EmbeddingResult, 1)
-
-// 	userQuery := lastSlice.Content
-// 	dynamic := checkTimeSensitivity(userQuery)
-// 	slog.Info("is query dynamic?", "dynamic", dynamic)
-
-// 	if !dynamic && lenghtOfMsg == 1 && s.Semantic_Cache {
-// 		go s.embed.GenerateDenseEmbedding(userQuery, embedGenCtx, embeddingChan)
-// 		slog.Info("The query is not dynamic and its the first one! ..... being cached!")
-// 		req.CacheFlag = true
-// 	}
-// 	embedding := &types.DenseEmbedding{}
-// 	request.UserId = userId
-// 	request.Cacheable = true
-// 	slog.Info("cacheFlag", "cacheFlag", req.CacheFlag)
-// 	if req.CacheFlag {
-// 		slog.Info("inside the if")
-// 		select {
-// 		case <-embedCtx.Done():
-// 			slog.Info("Embedding generation took more time than expected! Skipping embedding generation and moving onto llm response generation!")
-// 		case result := <-embeddingChan:
-// 			if result.Err != nil {
-// 				break
-// 			}
-// 			request.EmbedGenSuccess = true
-// 			embedding = result.Embedding_Result
-// 			slog.Info("embedding generation was successful", "query", result.Query)
-// 			cacheRes, exists, err := s.cache.ExistsInCache(ctx, embedding, userQuery)
-// 			request.CacheHit = exists
-
-// 			if err != nil {
-// 				//exit the if/select block here and go onto checking the complexity of the query
-// 				//TODO: decide if you actually wanna treat a query api error as a cache miss .. cuz that would/could lead to similar query being cached twice!
-// 				request.CacheHit = false
-// 			}
-// 			if !exists {
-// 				//exit the if/select block here and go onto checking the complexity of the query
-// 				slog.Info("Cache miss hence setting cache hit to false! query will be cached for future use!")
-// 				request.CacheHit = false
-// 			}
-// 			if exists {
-// 				end2 := time.Since(start)
-// 				store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
-// 				s.store.SubmitInsertRequest(store_ctx, &types.Request{
-// 					Id:           request.Id,
-// 					Cacheable:    request.Cacheable,
-// 					UserId:       request.UserId,
-// 					LLMResponse:  cacheRes.CachedAnswer,
-// 					UserQuery:    cacheRes.CachedQuery,
-// 					InputTokens:  cacheRes.InputTokens,
-// 					OutputTokens: cacheRes.OutputTokens,
-// 					Time:         end2,
-// 					Model:        "",
-// 					CacheHit:     request.CacheHit,
-// 					Level:        types.High, //defaulting to high on cached requests
-// 				})
-// 				//need to improve the writeJson here to ensure that the frontend/client knows there was a cache hit here!
-// 				//need to set the headers here as well .. I guess
-// 				slog.Info("Writing to the frontend!")
-// 				WriteJSON(w, http.StatusOK, cacheRes)
-// 				return nil
-// 			}
-// 		}
-// 	}
-// 	level := checkComplexity(userQuery)
-// 	slog.Info("checking the complexity of the userQuery!", "level", level)
-// 	llmResStruct := &types.LLMResponse{}
-// 	err := s.llms.GenerateResponse(ctx, w, req.Messages, level, llmResStruct) //TODO: change this to level only ... this is just for testing!
-// 	if err != nil {
-// 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
-// 		return err
-// 	}
-// 	store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
-// 	s.store.SubmitIncrementUserTokens(store_ctx, userId, llmResStruct.TotalTokens, llmResStruct.Level)
-// 	slog.Info("REQEUST INFORMATION", "request.cachehit", request.CacheHit, "req.cacheflag", req.CacheFlag)
-// 	cache_insert_ctx := context.WithoutCancel(ctx)
-// 	if !request.CacheHit && req.CacheFlag {
-// 		if embedding != nil {
-// 			slog.Info("INSERTING INTO THE CACHE!")
-// 			//embedding worker produced on time!
-// 			go s.cache.InsertIntoCache(cache_insert_ctx, embedding, *llmResStruct, userQuery)
-// 		} else {
-// 			slog.Info("inside the else")
-// 			go func() {
-// 				defer embedGenCtxCancel()
-// 				select {
-// 				case result := <-embeddingChan:
-// 					slog.Info("The worker did not create the embedding on time but in less than 7 seconds ... now lazy caching!")
-// 					if result.Err != nil {
-// 						slog.Info("Embedding Gen unsuccesful!")
-// 						return
-// 					}
-// 					request.EmbedGenSuccess = types.EmbedGenSuccess
-// 					embedding = result.Embedding_Result
-// 					s.cache.InsertIntoCache(cache_insert_ctx, embedding, *llmResStruct, userQuery)
-// 				case <-embedGenCtx.Done():
-// 					slog.Info("Embedding Generation was taking longer than 7 seconds... skipping caching even though cacheable and cache miss")
-// 				}
-// 			}()
-// 		}
-// 	}
-
-// 	request.InputTokens = llmResStruct.InputTokens
-// 	request.OutputTokens = llmResStruct.OutputTokens
-// 	request.TotalToken = llmResStruct.TotalTokens
-// 	request.Model = llmResStruct.Model
-// 	request.Level = llmResStruct.Level
-// 	request.LLMResponse = llmResStruct.LLMRes.String()
-// 	request.UserQuery = userQuery
-// 	end := time.Since(start)
-// 	request.Time = end
-// 	slog.Info("inserting this request into the database!", "request", request)
-// 	insert_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
-// 	s.store.SubmitInsertRequest(insert_ctx, request)
-
-// 	slog.Info("Query Answered!", "timeTaken", end)
-// 	slog.Info("Response from the LLM was generated succesfully! At the end of request", "llmResStruct", llmResStruct)
-// 	span.SetAttributes(
-// 		attribute.Bool("cachehit", request.CacheHit),
-// 	)
-// 	return nil
-// }
-
-func (s *AIGateway) RefactoredChat(w http.ResponseWriter, r *http.Request) *APIError {
+func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) *APIError {
 	slog.Info("---------------------------------------NEW REQUEST---------------------------------------")
 	start := time.Now()
 	ctx, span := Tracer.Start(r.Context(), "Chat")
@@ -312,6 +155,8 @@ func (s *AIGateway) RefactoredChat(w http.ResponseWriter, r *http.Request) *APIE
 			Error:   err,
 		}
 	}
+	model := req.Model
+	slog.Info("Model name is", "model", model)
 	defer r.Body.Close()
 	//feed the userId
 	request.UserId = userId
@@ -338,7 +183,7 @@ func (s *AIGateway) RefactoredChat(w http.ResponseWriter, r *http.Request) *APIE
 	dynamic := checkTimeSensitivity(userQuery)
 	slog.Info("is query dynamic?", "dynamic", dynamic)
 	request.Id = uuid.NewString()
-	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*300)
+	embedCtx, embedCancel := context.WithTimeout(ctx, time.Millisecond*500)
 	detachedCtx := context.WithoutCancel(ctx)
 	// STEP 2: Apply your specific 7-second logic to this valid, traced context
 	embedGenCtx, embedGenCtxCancel := context.WithTimeout(detachedCtx, 2*time.Second)
@@ -401,7 +246,7 @@ func (s *AIGateway) RefactoredChat(w http.ResponseWriter, r *http.Request) *APIE
 	level := checkComplexity(userQuery)
 	slog.Info("checking the complexity of the userQuery!", "level", level)
 	llmResStruct := &types.LLMResponse{}
-	err := s.llms.GenerateResponse(ctx, w, req.Messages, level, llmResStruct)
+	err := s.llms.GenerateResponse(ctx, w, req.Messages, level, model, llmResStruct)
 	if err != nil {
 		slog.Error("Got this error while trying to generate response from the LLM ", "error", err)
 		return &APIError{
@@ -410,6 +255,7 @@ func (s *AIGateway) RefactoredChat(w http.ResponseWriter, r *http.Request) *APIE
 			Error:   err,
 		}
 	}
+	// slog.Info("LLM response is", "res", llmResStruct.LLMRes)
 	store_ctx := context.WithValue(context.Background(), types.UserIdKey, userId)
 	s.store.SubmitIncrementUserTokens(store_ctx, userId, llmResStruct.TotalTokens, llmResStruct.Level)
 	slog.Info("REQEUST INFORMATION", "cacheable", request.Cacheable, "EmbedGenSuccess", request.EmbedGenSuccess)
