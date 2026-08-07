@@ -274,7 +274,7 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) *APIError {
 					slog.Info("Lazy cache skipped: embedding failed or was cancelled", "error", result.Err)
 					return
 				}
-				exists, _, err := s.cache.ExistsInCache(cache_insert_ctx, result.Embedding_Result, userQuery)
+				_, exists, err := s.cache.ExistsInCache(cache_insert_ctx, result.Embedding_Result, userQuery)
 				if err != nil {
 					slog.Warn("Lazy cache: existence check failed, inserting anyway", "error", err)
 				} else if exists {
