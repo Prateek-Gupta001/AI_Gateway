@@ -2,6 +2,7 @@ version: '3.8'
 services:
   qdrant:
     image: qdrant/qdrant
+    container_name:  AI_Gateway_Qdrant
     ports:
       - "6333:6333" # HTTP API
       - "6334:6334" # gRPC API (Required for your Go client)
@@ -10,18 +11,30 @@ services:
 
   postgres:
     image: postgres:15-alpine
+    container_name: AI_Gateway_Postgres
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: gateway_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: gobank
+      POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
       - ./pg_data:/var/lib/postgresql/data
 
+  embedding:
+    image: prateek329/embedding-service
+    container_name: AI_Gateway_embedding-microservice
+    ports:
+      - "50051:50051"
+    environment:
+      - FASTEMBED_CACHE_PATH=/app/model_cache
+    volumes:
+      - embedding_model_cache:/app/model_cache
+
+
   jaeger:
     image: jaegertracing/all-in-one:latest
-    container_name: jaeger
+    container_name: AI_Gateway_jaeger
     environment:
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
     ports:
@@ -34,3 +47,7 @@ services:
       - "4318:4318"   # OTLP HTTP receiver (Used by your Go App)
       - "14250:14250"
       - "9411:9411"
+
+
+volumes:
+  embedding_model_cache:

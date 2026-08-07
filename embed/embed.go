@@ -6,95 +6,95 @@ import (
 	"log/slog"
 	"time"
 
+	pb "github.com/Prateek-Gupta001/AI_Gateway/proto/embedding"
 	"github.com/Prateek-Gupta001/AI_Gateway/types"
-	"github.com/nlpodyssey/cybertron/pkg/models/bert"
-	"github.com/nlpodyssey/cybertron/pkg/tasks"
-	"github.com/nlpodyssey/cybertron/pkg/tasks/textencoding"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Embed interface {
-	SubmitJob(context.Context, string, chan types.EmbeddingResult)
+	GenerateDenseEmbedding(query string, ctx context.Context, resultChan chan types.EmbeddingResult)
 }
 
 var Tracer = otel.Tracer("ai-gateway-service")
 
-type EmbeddingService struct {
-	JobQueue chan types.EmbeddingJob
+type EmbeddingClient struct {
+	EmbedServiceUrl string
+	conn            *grpc.ClientConn
+	client          pb.EmbeddingServiceClient
 }
 
-func NewEmbeddingService(numWorkers int, queueLen int) *EmbeddingService {
-	jobQueue := make(chan types.EmbeddingJob, queueLen)
-	for i := 0; i < numWorkers; i++ {
-		go Worker(i, jobQueue)
-	}
-	return &EmbeddingService{
-		JobQueue: jobQueue,
-	}
-}
-
-func Worker(id int, jobQueue chan types.EmbeddingJob) {
-
-	modelsDir := "models"
-	modelName := textencoding.DefaultModel
-
-	m, err := tasks.LoadModelForTextEncoding(&tasks.Config{ModelsDir: modelsDir, ModelName: modelName})
+func NewEmbeddingService(url string) (*EmbeddingClient, error) {
+	// Create gRPC connection with proper options
+	conn, err := grpc.NewClient(
+		url,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 	if err != nil {
-		slog.Error("error while loading the model", "error", err)
-		fmt.Println(err)
+		return nil, fmt.Errorf("failed to create gRPC connection: %w", err)
 	}
-	slog.Info("Worker loaded with model ready to create embeddings!", "id", id)
-	for job := range jobQueue {
-		slog.Info("Worker got a job!", "id", id)
-		ctx, span := Tracer.Start(job.Ctx, "WorkerProcessing")
-		span.SetAttributes(
-			attribute.String("input string", job.Input),
-		)
-		start := time.Now()
-		if job.Ctx.Err() != nil {
-			continue
+
+	// Create the embedding service client
+	client := pb.NewEmbeddingServiceClient(conn)
+
+	return &EmbeddingClient{
+		EmbedServiceUrl: url,
+		conn:            conn,
+		client:          client,
+	}, nil
+}
+
+func (e *EmbeddingClient) GenerateDenseEmbedding(query string, ctx context.Context, result chan types.EmbeddingResult) {
+	slog.Info("Got a dense embedding generation request!")
+	ctx, span := Tracer.Start(ctx, "Dense Embedding Generation")
+	defer span.End()
+	span.SetAttributes(attribute.String("Query", query))
+	// Validate input
+	if query == "" {
+		result <- types.EmbeddingResult{
+			Err: fmt.Errorf("No query provided!"),
 		}
-		slog.Info("creating embedding", "query", job.Input)
-		result, err := m.Encode(ctx, job.Input, int(bert.MeanPooling))
-		slog.Info("Vector Preview", "v[0:5]", len(result.Vector.Data().F32()))
-		if err != nil {
-			job.ResultChan <- types.EmbeddingResult{
-				Embedding_Result: types.Embedding{},
-				Err:              err,
-			}
-			continue
+		return
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+
+	// Create the request
+	req := &pb.Query{
+		Query: query,
+	}
+
+	// Make the gRPC call
+	resp, err := e.client.CreateDenseEmbedding(ctx, req)
+	if err != nil {
+		result <- types.EmbeddingResult{
+			Err: fmt.Errorf("failed to create dense embedding: %w", err),
 		}
-		n_result := types.EmbeddingResult{
-			Embedding_Result: result.Vector.Data().F32(),
-			Query:            job.Input,
+		return
+
+	}
+
+	// Convert protobuf response to types
+	denseEmbedding := types.DenseEmbedding{
+		Values: resp.Values,
+	}
+
+	select {
+	case <-ctx.Done():
+		result <- types.EmbeddingResult{
+			Err: fmt.Errorf("Ctx expired!"),
+		}
+
+	default:
+		result <- types.EmbeddingResult{
+			Embedding_Result: &denseEmbedding,
+			Query:            query,
 			Err:              nil,
 		}
-		slog.Info("Work is almost complete! sending the results to the channel!", "id", id)
-		end := time.Since(start)
-		span.End()
-		select {
-		case <-job.Ctx.Done():
-			slog.Info("Worker did its job but timeout happened!", "id", id, "time_taken", end.String())
-			continue
-		case job.ResultChan <- n_result:
-			slog.Info("Worker did its job and sent the result to the channel!", "id", id, "time_taken", end.String())
-			continue
-		}
-
-	}
-}
-
-func (s *EmbeddingService) SubmitJob(Ctx context.Context, Input string, ResultChan chan types.EmbeddingResult) {
-	Job := types.EmbeddingJob{
-		Ctx:        Ctx,
-		Input:      Input,
-		ResultChan: ResultChan,
-	}
-	select {
-	case s.JobQueue <- Job:
-
-	case <-Ctx.Done():
 
 	}
 }

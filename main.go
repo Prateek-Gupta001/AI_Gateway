@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/Prateek-Gupta001/AI_Gateway/api"
 	"github.com/Prateek-Gupta001/AI_Gateway/cache"
@@ -16,10 +19,33 @@ import (
 	"github.com/joho/godotenv"
 )
 
+func PrintBanner() {
+	// ANSI Color Codes
+	cyan := "\033[36m"
+	green := "\033[32m"
+	reset := "\033[0m"
+
+	fmt.Println(cyan + `
+    ___    ____  ________      __
+   /   |  /  _/ / ____/ /___ _/ /____ _      ______ ___  __
+  / /| |  / /  / / __/ / __ '/ __/ _ \ | /| / / __ '/ / / /
+ / ___ |_/ /  / /_/ / / /_/ / /_/  __/ |/ |/ / /_/ / /_/ /
+/_/  |_/___/  \____/_/\__,_/\__/\___/|__/|__/\__,_/\__, /
+                                                  /____/` + reset)
+	fmt.Println(green + " ⚡ High Performance AI Gateway v1.0" + reset)
+	fmt.Println(cyan + " 🚀 Semantic Caching | 🛡️ Rate Limiting | 🧠 Smart Routing" + reset)
+	fmt.Println(" -------------------------------------------------------")
+}
+
 func main() {
+	PrintBanner()
+	semantic_cache := true
 	opts := returnOpts()
 	ctx := context.Background()
 	err := godotenv.Load()
+	if err != nil {
+		slog.Error("got this error while trying to load a dotenv file", "error", err)
+	}
 	shutdown, err := telemetry.InitTracer("ai-gateway")
 	if err != nil {
 		slog.Error("failed to init tracer", "error", err)
@@ -31,9 +57,7 @@ func main() {
 			slog.Error("failed to shutdown tracer", "error", err)
 		}
 	}()
-	if err != nil {
-		slog.Error("got this error while trying to load a dotenv file", "error", err)
-	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
 	slog.Info("The logger has been intialised!")
@@ -47,12 +71,25 @@ func main() {
 		panic(err2)
 	}
 	llm := llm.NewLLMStruct()
-	cache := cache.NewQdrantCache()
+	cache, err := cache.NewQdrantCache()
+	if err != nil {
+		slog.Info("Got an error while trying to setup the qdrant cache", "error", err)
+		semantic_cache = false
+	}
 	go cache.ReviseCache(ctx)
-	embed := embed.NewEmbeddingService(3, 1000)
-	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1)
+	embed, err := embed.NewEmbeddingService("localhost:50051")
+	if err != nil {
+		slog.Info("Embedding Service Failed!")
+		semantic_cache = false
+	}
+	slog.Info("Semantic Cache: ", "up: ", semantic_cache)
+	server := api.NewAIGateway(":9000", store, llm, cache, embed, 1, semantic_cache)
 	slog.Info("Server is running on port 9000!")
-	server.Run()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if err := server.Run(ctx, stop); err != nil {
+		slog.Error("Got this error while running the server!", "error", err)
+		panic(err)
+	}
 }
 
 func returnOpts() *slog.HandlerOptions {

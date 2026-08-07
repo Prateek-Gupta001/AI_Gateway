@@ -19,7 +19,7 @@ import (
 )
 
 type LLMs interface {
-	GenerateResponse(context.Context, http.ResponseWriter, []types.Messages, types.Level, *types.LLMResponse) error
+	GenerateResponse(context.Context, http.ResponseWriter, []types.Messages, types.Level, string, *types.LLMResponse) error
 }
 
 var Tracer = otel.Tracer("ai-gateway-service")
@@ -37,27 +37,41 @@ type LLMStruct struct {
 	Models []llmModel
 }
 
-func (s *LLMStruct) ChangeModel(modelname string) llmModel {
-	//In future for making sure that model level changes if at that level the model failed!
-	for _, model := range s.Models {
-		if modelname != model.ModelName {
-			slog.Info("Returning a changed model", "earlier level", modelname, "new level", model.ModelName)
-			return model
-		}
-	}
-	slog.Error("Critical Error! Model change couldn't take place ... models weren't intialised properly")
-	return s.Models[0]
-}
+// func (s *LLMStruct) ChangeModel(modelname string) llmModel {
+// 	//In future for making sure that model level changes if at that level the model failed!
+// 	for _, model := range s.Models {
+// 		if modelname != model.ModelName {
+// 			slog.Info("Returning a changed model", "earlier level", modelname, "new level", model.ModelName)
+// 			return model
+// 		}
+// 	}
+// 	slog.Error("Critical Error! Model change couldn't take place ... models weren't intialised properly")
+// 	return s.Models[0]
+// }
 
-func (s *LLMStruct) GenerateResponse(ctx context.Context, w http.ResponseWriter, messages []types.Messages, Level types.Level, llmResStruct *types.LLMResponse) error {
+func (s *LLMStruct) GenerateResponse(ctx context.Context, w http.ResponseWriter, messages []types.Messages, Level types.Level, ModelName string, llmResStruct *types.LLMResponse) error {
 	fmt.Println("got a request in generate response", w, messages, Level)
 	//could employ a strategy here to ensure that the ones giving off the error a lot of the time is not selected!
 	//also .. make a fake .. http buffer/stream .. that I could then use .. to test things .. and actually show this running!
-	for _, llm := range s.Models {
-		if llm.Level == Level {
-			return llm.Call(ctx, w, messages, llm.ApiKey, llmResStruct)
+	if ModelName != "" {
+		for _, llm := range s.Models {
+			slog.Info("Going on the basis of model name")
+			if llm.ModelName == ModelName {
+				slog.Info("Model chosen", "model", ModelName)
+				return llm.Call(ctx, w, messages, llm.ApiKey, llmResStruct)
+			}
+		}
+
+	}
+	if Level != "" {
+		for _, llm := range s.Models {
+			slog.Info("choosing on the basis of the level", "level", Level)
+			if llm.Level == Level {
+				return llm.Call(ctx, w, messages, llm.ApiKey, llmResStruct)
+			}
 		}
 	}
+
 	return fmt.Errorf("Invalid Level type/ Not present in LLMStruct")
 }
 
@@ -75,7 +89,7 @@ func CallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types.Mes
 	client := &http.Client{}
 
 	requestBody := map[string]interface{}{
-		"model":  "gpt-4o", // Note: "gpt-5" does not exist yet; use "gpt-4o" or "o1-preview"
+		"model":  "gpt-4o",
 		"input":  CreateOpenAIMessages(messages),
 		"stream": true,
 	}
@@ -182,6 +196,7 @@ func MockCallGptAPI(ctx context.Context, w http.ResponseWriter, messages []types
 	}
 	if err != nil {
 		fmt.Println("Got this err ", err)
+		return err
 	}
 	defer resp.Body.Close()
 	reader := bufio.NewReader(resp.Body)
