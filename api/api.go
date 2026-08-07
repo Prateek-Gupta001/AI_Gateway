@@ -269,9 +269,16 @@ func (s *AIGateway) Chat(w http.ResponseWriter, r *http.Request) *APIError {
 		} else {
 			go func() {
 				defer embedGenCtxCancel()
-				result := <-embeddingChan // blocking — GenerateDenseEmbedding ALWAYS sends
+				result := <-embeddingChan
 				if result.Err != nil {
 					slog.Info("Lazy cache skipped: embedding failed or was cancelled", "error", result.Err)
+					return
+				}
+				exists, _, err := s.cache.ExistsInCache(cache_insert_ctx, result.Embedding_Result, userQuery)
+				if err != nil {
+					slog.Warn("Lazy cache: existence check failed, inserting anyway", "error", err)
+				} else if exists {
+					slog.Info("Lazy cache skipped: entry already exists")
 					return
 				}
 				slog.Info("Lazy caching!")
